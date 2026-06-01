@@ -99,15 +99,6 @@ func runApp() {
 
 	srv.onQuit = func() { app.Quit() }
 
-	// Native file picker, invoked from the UI via /api/pick.
-	srv.pick = func() ([]string, error) {
-		d := app.Dialog.OpenFile()
-		d.CanChooseFiles(true)
-		d.CanChooseDirectories(false)
-		d.SetTitle("Choose files to send")
-		return d.PromptForMultipleSelection()
-	}
-
 	startServer(srv)
 
 	startNetworkWatcher(context.Background(), identity, registry)
@@ -131,6 +122,21 @@ func runApp() {
 			TitleBar:                application.MacTitleBarHiddenInset,
 		},
 	})
+
+	// Native file picker, invoked from the UI via /api/pick.
+	// Declared here (after window creation) so we can re-show the window
+	// after the dialog closes — HideOnFocusLost hides it when the picker
+	// steals focus.
+	srv.pick = func() ([]string, error) {
+		d := app.Dialog.OpenFile()
+		d.CanChooseFiles(true)
+		d.CanChooseDirectories(false)
+		d.SetTitle("Choose files to send")
+		paths, err := d.PromptForMultipleSelection()
+		// Re-show the window after the dialog closes.
+		window.Show()
+		return paths, err
+	}
 
 	// Keep the window alive when "closed" — just hide it (popover behaviour).
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {

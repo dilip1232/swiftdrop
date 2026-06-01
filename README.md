@@ -8,6 +8,22 @@ Chromium) wrapping a Go core that does raw HTTP streaming.
 Symmetric: every device both **serves** (`/inbox`) and **sends**. Received
 files land in `~/Downloads/SwiftDrop/`.
 
+## Features
+
+- **Device pairing** — PIN-based pairing before any file transfer; paired keys are persisted
+- **Bilateral unpairing** — unpairing on one device notifies the other
+- **Auto-close pairing dialog** — when the remote device confirms the PIN, the local dialog closes automatically
+- **SHA-256 integrity verification** — sender hashes the file, receiver verifies after write; corrupted files are rejected and deleted
+- **Live transfer progress** — real-time progress bars and speed display that survive closing the drawer
+- **Open folder** — click the folder icon next to a completed transfer to open `~/Downloads/SwiftDrop/` in Finder
+- **Native macOS notifications** — transfer notifications show the SwiftDrop app icon (not Script Editor)
+- **Cancel transfers** — cancel an in-flight send from the UI
+- **Stall detection** — 30s response header timeout detects dead peers
+- **Rounded corners** — Lunar-style compact UI with CSS clip-path rounded corners and transparent window background
+- **File picker re-shows window** — the drawer reappears after the native file picker closes
+- **No file size cap** — transfers of any size; disk space checked before writing
+- **Drag-and-drop** — drop files directly onto the drawer
+
 ## Speed: no compromise
 
 Sending is a **pure Go path** — drag-and-drop and the native file picker hand
@@ -92,6 +108,6 @@ The same Go `http.Handler` serves two transports: the LAN port `:53317`
 
 ## Roadmap
 
-- Android app (Kotlin, NanoHTTPD foreground service, share-sheet send)
+- Windows support
 - Optional self-signed TLS with cached fingerprint
 - Resume interrupted transfers via HTTP range

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,10 +80,23 @@ func sendFileByPath(peer Peer, self Identity, path string, trk *tracker) {
 	trk.setCancel(tr, cancel)
 	defer cancel()
 
+	// Compute SHA-256 for integrity verification on the receiver side.
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		log.Printf("sendFileByPath %q hash failed: %v", name, err)
+		trk.finish(tr, err)
+		return
+	}
+	hash := hex.EncodeToString(h.Sum(nil))
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		trk.finish(tr, err)
+		return
+	}
+
 	var body io.Reader = &countingReader{r: f, tr: tr}
 	size := fi.Size()
 
-	err = sendToPeerWithOpts(ctx, peer, self, name, body, size, fi.Size(), false)
+	err = sendToPeerWithOpts(ctx, peer, self, name, body, size, fi.Size(), false, hash)
 	if err != nil {
 		log.Printf("sendFileByPath %q to %s FAILED: %v", name, peer.Name, err)
 	} else {
@@ -99,7 +114,8 @@ var transferClient = &http.Client{
 		MaxIdleConns:          16,
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: 3 * time.Second,
-		DisableCompression:    true, // we move mostly-incompressible bytes
+		ResponseHeaderTimeout: 30 * time.Second, // detect stalled peers
+		DisableCompression:    true,             // we move mostly-incompressible bytes
 		TLSHandshakeTimeout:   10 * time.Second,
 		WriteBufferSize:       256 * 1024,
 		ReadBufferSize:        256 * 1024,
@@ -110,7 +126,7 @@ var transferClient = &http.Client{
 // buffering the whole file. contentLength may be -1 if unknown (chunked).
 // When encrypted is true, the X-Encrypted header is set so the receiver knows
 // to decrypt. Canceling ctx aborts the in-flight request.
-func sendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename string, body io.Reader, contentLength int64, originalSize int64, encrypted bool) error {
+func sendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename string, body io.Reader, contentLength int64, originalSize int64, encrypted bool, sha256hash ...string) error {
 	target := fmt.Sprintf("http://%s/inbox", peer.Host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {
@@ -128,6 +144,9 @@ func sendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename 
 	}
 	if encrypted {
 		req.Header.Set("X-Encrypted", "aes-gcm")
+	}
+	if len(sha256hash) > 0 && sha256hash[0] != "" {
+		req.Header.Set("X-SHA256", sha256hash[0])
 	}
 
 	resp, err := transferClient.Do(req)
@@ -213,11 +232,14 @@ func announceToRemote(peerHost string, self Identity) {
 	resp.Body.Close()
 }
 
-// notify shows a desktop notification (best-effort, macOS via osascript).
+// notify shows a desktop notification. On macOS it uses nativeNotify (cgo)
+// so the notification shows SwiftDrop's icon instead of Script Editor's.
 func notify(title, message string) {
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS == "darwin" {
+		go nativeNotify(title, message)
 		return
 	}
+	// Fallback for other platforms.
 	script := fmt.Sprintf("display notification %q with title %q sound name \"Glass\"", message, title)
 	_ = exec.Command("osascript", "-e", script).Start()
 }

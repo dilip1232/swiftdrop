@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -245,11 +246,29 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		log.Printf("inbox copy %s: %v", dest, err)
 		return
 	}
-	s.trk.finish(tr, nil)
 	if closeErr != nil {
 		log.Printf("inbox close %s: %v", dest, closeErr)
 	}
 
+	// Verify SHA-256 integrity if the sender included a hash.
+	if expected := r.Header.Get("X-SHA256"); expected != "" {
+		rf, err := os.Open(dest)
+		if err == nil {
+			h := sha256.New()
+			io.Copy(h, rf)
+			rf.Close()
+			actual := hex.EncodeToString(h.Sum(nil))
+			if actual != expected {
+				s.trk.finish(tr, fmt.Errorf("hash mismatch"))
+				os.Remove(dest)
+				http.Error(w, "integrity check failed", http.StatusBadRequest)
+				log.Printf("inbox %s: hash mismatch (expected %s, got %s)", dest, expected[:12], actual[:12])
+				return
+			}
+		}
+	}
+
+	s.trk.finish(tr, nil)
 	log.Printf("received %q (%s) from %s", filepath.Base(dest), humanSize(n), from)
 	notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), humanSize(n), from))
 	w.WriteHeader(http.StatusOK)
