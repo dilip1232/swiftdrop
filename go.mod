@@ -3,9 +3,11 @@ module swiftdrop
 go 1.26
 
 require (
-	github.com/libp2p/zeroconf/v2 v2.2.0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.97
+	swiftdrop-core v0.0.0
 )
+
+replace swiftdrop-core => ../swiftdrop-core
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
@@ -27,6 +29,7 @@ require (
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/kevinburke/ssh_config v1.4.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/libp2p/zeroconf/v2 v2.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/miekg/dns v1.1.62 // indirect
