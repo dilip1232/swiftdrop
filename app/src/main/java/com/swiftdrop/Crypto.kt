@@ -1,0 +1,184 @@
+package com.swiftdrop
+
+import android.content.Context
+import org.json.JSONObject
+import java.io.InputStream
+import java.io.OutputStream
+import java.math.BigInteger
+import java.nio.ByteBuffer
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+
+/**
+ * AES-256-GCM streaming encryption + PIN-based pairing, mirroring the Mac Go
+ * implementation.
+ *
+ * Wire format:
+ *   [12-byte base nonce]
+ *   [4-byte big-endian ciphertext-chunk length][ciphertext] …
+ *   [4-byte 0x00000000] ← end marker
+ *
+ * Each chunk: up to 64 KiB plaintext, encrypted with nonce = baseNonce XOR chunkIndex.
+ */
+object Crypto {
+    private const val CHUNK_PLAIN = 64 * 1024
+    private const val NONCE_SIZE = 12
+    private const val TAG_BITS = 128
+
+    fun encryptStream(out: OutputStream, inp: InputStream, key: ByteArray) {
+        val baseNonce = ByteArray(NONCE_SIZE).also { SecureRandom().nextBytes(it) }
+        out.write(baseNonce)
+
+        val buf = ByteArray(CHUNK_PLAIN)
+        var idx = 0L
+        while (true) {
+            val n = readFull(inp, buf)
+            if (n <= 0) break
+            val nonce = chunkNonce(baseNonce, idx)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+            val ct = cipher.doFinal(buf, 0, n)
+            out.write(ByteBuffer.allocate(4).putInt(ct.size).array())
+            out.write(ct)
+            idx++
+        }
+        // End marker
+        out.write(ByteBuffer.allocate(4).putInt(0).array())
+        out.flush()
+    }
+
+    fun decryptStream(out: OutputStream, inp: InputStream, key: ByteArray) {
+        val baseNonce = ByteArray(NONCE_SIZE)
+        readExact(inp, baseNonce)
+
+        var idx = 0L
+        while (true) {
+            val lenBuf = ByteArray(4)
+            readExact(inp, lenBuf)
+            val cLen = ByteBuffer.wrap(lenBuf).int
+            if (cLen == 0) break // end marker
+            if (cLen > CHUNK_PLAIN + 16 + 1024) throw IllegalStateException("chunk too large: $cLen")
+
+            val ct = ByteArray(cLen)
+            readExact(inp, ct)
+            val nonce = chunkNonce(baseNonce, idx)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+            val pt = cipher.doFinal(ct)
+            out.write(pt)
+            idx++
+        }
+        out.flush()
+    }
+
+    private fun chunkNonce(base: ByteArray, idx: Long): ByteArray {
+        val n = base.copyOf()
+        for (i in 0 until 8) {
+            n[n.size - 1 - i] = (n[n.size - 1 - i].toInt() xor ((idx shr (i * 8)) and 0xFF).toInt()).toByte()
+        }
+        return n
+    }
+
+    private fun readFull(inp: InputStream, buf: ByteArray): Int {
+        var off = 0
+        while (off < buf.size) {
+            val n = inp.read(buf, off, buf.size - off)
+            if (n < 0) break
+            off += n
+        }
+        return off
+    }
+
+    private fun readExact(inp: InputStream, buf: ByteArray) {
+        var off = 0
+        while (off < buf.size) {
+            val n = inp.read(buf, off, buf.size - off)
+            if (n < 0) throw IllegalStateException("unexpected EOF")
+            off += n
+        }
+    }
+}
+
+/**
+ * Manages shared AES-256 keys for paired devices, persisted in SharedPreferences.
+ */
+object PairStore {
+    private const val PREFS = "swiftdrop_pairs"
+    private val keys = mutableMapOf<String, ByteArray>()
+
+    // Pending pairing offer
+    @Volatile var pendingPIN: String? = null
+        private set
+    @Volatile var pendingKey: ByteArray? = null
+        private set
+    @Volatile var pendingExpiry: Long = 0
+        private set
+
+    fun init(ctx: Context) {
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        for ((k, v) in prefs.all) {
+            if (v is String) {
+                try {
+                    keys[k] = hexToBytes(v)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    fun isPaired(id: String): ByteArray? = synchronized(keys) { keys[id] }
+
+    fun generatePIN(): String {
+        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val pin = String.format("%06d", BigInteger(1, ByteArray(4).also { SecureRandom().nextBytes(it) }).mod(BigInteger.valueOf(1_000_000)))
+        synchronized(keys) {
+            pendingPIN = pin
+            pendingKey = key
+            pendingExpiry = System.currentTimeMillis() + 60_000
+        }
+        return pin
+    }
+
+    fun claimPIN(pin: String, peerId: String): ByteArray? {
+        synchronized(keys) {
+            if (pendingPIN == null || pin != pendingPIN || System.currentTimeMillis() > pendingExpiry) return null
+            val key = pendingKey!!
+            keys[peerId] = key
+            pendingPIN = null
+            pendingKey = null
+            save()
+            return key
+        }
+    }
+
+    fun unpair(peerId: String) {
+        synchronized(keys) {
+            keys.remove(peerId)
+            save()
+        }
+    }
+
+    fun storeKey(peerId: String, key: ByteArray) {
+        synchronized(keys) {
+            keys[peerId] = key
+            save()
+        }
+    }
+
+    private fun save() {
+        val prefs = State.appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        prefs.clear()
+        for ((id, k) in keys) prefs.putString(id, bytesToHex(k))
+        prefs.apply()
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val len = hex.length
+        val data = ByteArray(len / 2)
+        for (i in 0 until len step 2) data[i / 2] = ((Character.digit(hex[i], 16) shl 4) + Character.digit(hex[i + 1], 16)).toByte()
+        return data
+    }
+
+    fun bytesToHex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+}
