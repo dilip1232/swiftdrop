@@ -111,6 +111,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
 
         val cr = State.appContext.contentResolver
         val tr = State.newTransfer(name, trackSize, from, "recv")
+        Notifier.refreshServiceNotification()
         PowerLocks.begin()
 
         val values = ContentValues().apply {
@@ -148,6 +149,26 @@ class HttpServer : NanoHTTPD(State.PORT) {
                 }
                 out.flush()
             }
+            // Verify SHA-256 integrity if the sender included a hash.
+            val expected = session.headers["x-sha256"]
+            if (!expected.isNullOrBlank()) {
+                val md = java.security.MessageDigest.getInstance("SHA-256")
+                cr.openInputStream(dest)?.use { verifyInput ->
+                    val vbuf = ByteArray(256 * 1024)
+                    while (true) {
+                        val n = verifyInput.read(vbuf)
+                        if (n < 0) break
+                        md.update(vbuf, 0, n)
+                    }
+                }
+                val actual = md.digest().joinToString("") { "%02x".format(it) }
+                if (actual != expected) {
+                    runCatching { cr.delete(dest, null, null) }
+                    tr.status = "error"; tr.err = "hash mismatch"
+                    return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "integrity check failed")
+                }
+            }
+
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             cr.update(dest, values, null, null)
@@ -159,6 +180,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
             runCatching { cr.delete(dest, null, null) }
             return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, e.message ?: "write failed")
         } finally {
+            Notifier.refreshServiceNotification()
             PowerLocks.end()
         }
     }

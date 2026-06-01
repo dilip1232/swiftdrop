@@ -7,6 +7,21 @@ with the system **share sheet**. Received files land in **Downloads/SwiftDrop**.
 
 No Android Studio required — build and install entirely from the terminal.
 
+## Features
+
+- **Device pairing** — PIN-based pairing before any file transfer; paired keys are persisted
+- **Bilateral unpairing** — unpairing on one device notifies the other
+- **Auto-close pairing dialog** — when the remote device confirms the PIN, the local dialog closes automatically
+- **SHA-256 integrity verification** — sender hashes the file, receiver verifies after write; corrupted files are rejected and deleted
+- **Dynamic notifications** — status bar icon changes based on transfer state (sending/receiving/idle)
+- **Live transfer progress** — real-time progress bars and speed display
+- **Open folder** — tap the folder icon next to a completed transfer to open Downloads
+- **Cancel transfers** — cancel an in-flight send; disconnects the connection immediately
+- **Share sheet integration** — share files into SwiftDrop from any app
+- **Wake + WiFi locks** — CPU and WiFi radio stay active during transfers, even with screen off
+- **Stall detection** — 30s read timeout detects dead peers
+- **No file size cap** — transfers of any size; disk space checked before writing
+
 ## What it does
 
 - **Receive:** runs a small HTTP server in a foreground service; files pushed by
@@ -88,3 +103,10 @@ Tap the device name in the header to rename this device.
 
 Shares the exact HTTP contract with the Mac app, so Mac ↔ Android works both
 directions.
+
+## Roadmap
+
+- Battery optimization exemption prompt on first launch
+- Windows companion app
+- Optional self-signed TLS with cached fingerprint
+- Resume interrupted transfers via HTTP range

@@ -5,6 +5,7 @@ import android.provider.OpenableColumns
 import java.io.BufferedOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 /**
  * Streams a file (given as a content URI) straight to a peer's /inbox using a
@@ -36,6 +37,7 @@ object Sender {
         }
 
         val t = State.newTransfer(name, if (size < 0) 0 else size, peer.name, "send")
+        Notifier.refreshServiceNotification()
         PowerLocks.begin()
         var conn: HttpURLConnection? = null
         try {
@@ -47,8 +49,20 @@ object Sender {
                 setRequestProperty("X-From", State.deviceName)
                 setRequestProperty("X-From-ID", State.deviceId)
                 if (size > 0) setRequestProperty("X-File-Size", size.toString())
+                // Compute SHA-256 hash for integrity verification.
+                val hash = cr.openInputStream(uri)?.use { hashInput ->
+                    val md = MessageDigest.getInstance("SHA-256")
+                    val hbuf = ByteArray(BUF)
+                    while (true) {
+                        val n = hashInput.read(hbuf)
+                        if (n < 0) break
+                        md.update(hbuf, 0, n)
+                    }
+                    md.digest().joinToString("") { "%02x".format(it) }
+                }
+                if (hash != null) setRequestProperty("X-SHA256", hash)
                 connectTimeout = 8000
-                readTimeout = 0
+                readTimeout = 30_000 // detect stalled peers
                 if (size >= 0) setFixedLengthStreamingMode(size) else setChunkedStreamingMode(BUF)
             }
 
@@ -78,6 +92,7 @@ object Sender {
             if (t.canceled) t.status = "canceled"
             else { t.status = "error"; t.err = e.message }
         } finally {
+            Notifier.refreshServiceNotification()
             PowerLocks.end()
         }
     }

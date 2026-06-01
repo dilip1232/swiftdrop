@@ -27,7 +27,7 @@ class SwiftDropService : Service() {
         super.onCreate()
         State.init(this)
         Notifier.ensureChannels(this)
-        startForeground(1, Notifier.serviceNotification(this))
+        startForeground(Notifier.SERVICE_ID, Notifier.serviceNotification(this))
 
         val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         multicastLock = wifi.createMulticastLock("swiftdrop").apply {
