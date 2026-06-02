@@ -9,36 +9,52 @@ import (
 
 // TrayIcon renders a small monochrome "⇅" (up/down arrows) glyph as PNG bytes.
 // Drawn in black with alpha so macOS can treat it as a template icon that
-// adapts to light and dark menu bars.
+// adapts to light and dark menu bars. 32×32 is the standard macOS template size.
 func TrayIcon() []byte {
-	return renderIcon(color.RGBA{0, 0, 0, 255}, nil)
+	return renderIcon(32, color.RGBA{0, 0, 0, 255}, nil)
 }
 
-// TrayIconColored renders a colored version of the tray icon for Windows.
-// Blue arrows on a rounded blue-tinted background, visible in both light and
-// dark Windows taskbar themes.
+// TrayIconColored renders a colored 64×64 version of the tray icon for Windows.
+// Blue arrows on a rounded blue background, crisp on high-DPI taskbars.
 func TrayIconColored() []byte {
-	bg := color.RGBA{30, 100, 220, 255}  // blue background
-	fg := color.RGBA{255, 255, 255, 255} // white arrows
-	return renderIcon(fg, &bg)
+	bg := color.RGBA{30, 100, 220, 255}
+	fg := color.RGBA{255, 255, 255, 255}
+	return renderIcon(64, fg, &bg)
 }
 
-func renderIcon(fg color.Color, bg *color.RGBA) []byte {
-	const s = 32
+// AppIcon renders a 256×256 colored icon suitable for the window title bar and
+// taskbar on Windows.
+func AppIcon() []byte {
+	bg := color.RGBA{30, 100, 220, 255}
+	fg := color.RGBA{255, 255, 255, 255}
+	return renderIcon(256, fg, &bg)
+}
+
+func renderIcon(s int, fg color.Color, bg *color.RGBA) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, s, s))
 
-	// Fill background if provided (Windows needs a visible background).
+	// Rounded-corner radius scales with icon size.
+	cornerMin := s / 10
+	if cornerMin < 3 {
+		cornerMin = 3
+	}
+
 	if bg != nil {
 		for y := 0; y < s; y++ {
 			for x := 0; x < s; x++ {
-				// Rounded corners: skip pixels in the 4 corners.
 				dx := min(x, s-1-x)
 				dy := min(y, s-1-y)
-				if dx+dy >= 3 { // simple rounded-rect mask
+				if dx+dy >= cornerMin {
 					img.Set(x, y, *bg)
 				}
 			}
 		}
+	}
+
+	// Shaft half-width scales with icon size.
+	sw := s / 16
+	if sw < 1 {
+		sw = 1
 	}
 
 	set := func(x, y int) {
@@ -48,12 +64,11 @@ func renderIcon(fg color.Color, bg *color.RGBA) []byte {
 	}
 	vbar := func(cx, y0, y1 int) {
 		for y := y0; y <= y1; y++ {
-			for x := cx - 1; x <= cx+1; x++ {
+			for x := cx - sw; x <= cx+sw; x++ {
 				set(x, y)
 			}
 		}
 	}
-	// Filled triangle arrowhead pointing up (apex at top) or down.
 	head := func(cx, apexY, dir, h int) {
 		for i := 0; i <= h; i++ {
 			y := apexY + dir*i
@@ -63,14 +78,14 @@ func renderIcon(fg color.Color, bg *color.RGBA) []byte {
 		}
 	}
 
-	// Up arrow (left).
-	upX := 11
-	vbar(upX, 8, 26)
-	head(upX, 4, 1, 6)
-	// Down arrow (right).
-	dnX := 21
-	vbar(dnX, 6, 24)
-	head(dnX, 28, -1, 6)
+	// Positions scale proportionally to icon size.
+	upX := s * 11 / 32
+	vbar(upX, s*8/32, s*26/32)
+	head(upX, s*4/32, 1, s*6/32)
+
+	dnX := s * 21 / 32
+	vbar(dnX, s*6/32, s*24/32)
+	head(dnX, s*28/32, -1, s*6/32)
 
 	var buf bytes.Buffer
 	_ = png.Encode(&buf, img)
