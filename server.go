@@ -112,12 +112,23 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	}))
 	// Public endpoint: remote device tells us to unpair them.
+	// Verify the caller's IP matches the registered peer to prevent spoofing.
 	mux.HandleFunc("/api/pair/remote-unpair", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
-		if id != "" {
-			Pairs.Unpair(id)
-			log.Printf("remote-unpair: %s unpaired us", id)
+		if id == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
+		if peer, ok := s.Reg.Get(id); ok {
+			callerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+			peerIP, _, _ := net.SplitHostPort(peer.Host)
+			if callerIP != peerIP {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		Pairs.Unpair(id)
+		log.Printf("remote-unpair: %s unpaired us", id)
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/api/pair/claim", s.handlePairClaim) // peer presents a PIN (public)
@@ -187,7 +198,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	dlDir := DownloadDir()
 	if origSize > 0 {
-		if free, err := DiskFree(dlDir); err == nil && uint64(origSize) > free-100<<20 {
+		if free, err := DiskFree(dlDir); err == nil && uint64(origSize)+100<<20 > free {
 			http.Error(w, "not enough disk space", http.StatusInsufficientStorage)
 			return
 		}
@@ -246,7 +257,9 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n, err := io.Copy(f, body)
+	// Hash on-the-fly so we never re-read the file from disk.
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), body)
 	closeErr := f.Close()
 	if err != nil {
 		s.Trk.Finish(tr, err)
@@ -261,19 +274,13 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 
 	// Verify SHA-256 integrity if the sender included a hash.
 	if expected := r.Header.Get("X-SHA256"); expected != "" {
-		rf, err := os.Open(dest)
-		if err == nil {
-			h := sha256.New()
-			io.Copy(h, rf)
-			rf.Close()
-			actual := hex.EncodeToString(h.Sum(nil))
-			if actual != expected {
-				s.Trk.Finish(tr, fmt.Errorf("hash mismatch"))
-				os.Remove(dest)
-				http.Error(w, "integrity check failed", http.StatusBadRequest)
-				log.Printf("inbox %s: hash mismatch (expected %s, got %s)", dest, expected[:12], actual[:12])
-				return
-			}
+		actual := hex.EncodeToString(h.Sum(nil))
+		if actual != expected {
+			s.Trk.Finish(tr, fmt.Errorf("hash mismatch"))
+			os.Remove(dest)
+			http.Error(w, "integrity check failed", http.StatusBadRequest)
+			log.Printf("inbox %s: hash mismatch (expected %s, got %s)", dest, expected[:12], actual[:12])
+			return
 		}
 	}
 
@@ -315,6 +322,19 @@ func (s *Server) handleAddPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	if !strings.Contains(host, ":") {
 		host = fmt.Sprintf("%s:%d", host, DefaultPort)
+	}
+
+	// If the request doesn't carry the local API token it's a remote peer
+	// announcing itself — verify the announced host matches the caller's IP
+	// so a third party can't inject arbitrary peers.
+	tok := r.Header.Get("X-API-Token")
+	if tok != s.ID.APIToken {
+		callerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+		announcedIP, _, _ := net.SplitHostPort(host)
+		if callerIP != announcedIP {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 	}
 
 	peer, err := ProbePeer(host)
@@ -359,12 +379,17 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown device", http.StatusNotFound)
 		return
 	}
-	if Pairs.IsPaired(peer.ID) == nil {
+	key := Pairs.IsPaired(peer.ID)
+	if key == nil {
 		http.Error(w, "pair with this device first", http.StatusForbidden)
 		return
 	}
 
-	if err := SendToPeerWithOpts(r.Context(), peer, s.ID, name, r.Body, r.ContentLength, r.ContentLength, false); err != nil {
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(EncryptStream(pw, r.Body, key))
+	}()
+	if err := SendToPeerWithOpts(r.Context(), peer, s.ID, name, pr, EncryptedSize(r.ContentLength), r.ContentLength, true); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		log.Printf("send to %s: %v", peer.Name, err)
 		return

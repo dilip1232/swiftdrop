@@ -2,8 +2,6 @@ package core
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,23 +76,21 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 	trk.SetCancel(tr, cancel)
 	defer cancel()
 
-	// Compute SHA-256 for integrity verification on the receiver side.
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		log.Printf("sendFileByPath %q hash failed: %v", name, err)
-		trk.Finish(tr, err)
-		return
-	}
-	hash := hex.EncodeToString(h.Sum(nil))
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		trk.Finish(tr, err)
-		return
+	key := Pairs.IsPaired(peer.ID)
+	if key != nil {
+		// Encrypted send — stream through AES-256-GCM.
+		// GCM tags provide integrity; no separate SHA-256 needed.
+		pr, pw := io.Pipe()
+		go func() {
+			pw.CloseWithError(EncryptStream(pw, &CountingReader{R: f, Tr: tr}, key))
+		}()
+		err = SendToPeerWithOpts(ctx, peer, self, name, pr, EncryptedSize(fi.Size()), fi.Size(), true)
+	} else {
+		// Unencrypted fallback (handleSendPath already rejects unpaired peers).
+		var body io.Reader = &CountingReader{R: f, Tr: tr}
+		err = SendToPeerWithOpts(ctx, peer, self, name, body, fi.Size(), fi.Size(), false)
 	}
 
-	var body io.Reader = &CountingReader{R: f, Tr: tr}
-	size := fi.Size()
-
-	err = SendToPeerWithOpts(ctx, peer, self, name, body, size, fi.Size(), false, hash)
 	if err != nil {
 		log.Printf("sendFileByPath %q to %s FAILED: %v", name, peer.Name, err)
 	} else {
@@ -185,9 +181,11 @@ func LocalIP() string {
 
 // ProbePeer fetches host/api/me to confirm a manually-entered device is a
 // reachable SwiftDrop instance and to learn its real identity.
+// probeClient is reused across keepalive probes so TCP connections are pooled.
+var probeClient = &http.Client{Timeout: 4 * time.Second}
+
 func ProbePeer(host string) (Peer, error) {
-	client := &http.Client{Timeout: 4 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s/api/me", host))
+	resp, err := probeClient.Get(fmt.Sprintf("http://%s/api/me", host))
 	if err != nil {
 		return Peer{}, err
 	}
