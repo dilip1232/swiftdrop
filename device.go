@@ -97,26 +97,25 @@ func (r *PeerRegistry) IsIgnored(id string) bool {
 	return true
 }
 
-// RemoveDevice removes a peer from both sources and suppresses re-discovery for
-// a short window, so the × button works even for an mDNS-discovered device
-// (which would otherwise immediately reappear).
-// RemoveDevice hides a device briefly. It is NOT a permanent forget: the device
-// stays in `known`, so if it's still reachable the prober brings it back within
-// a few seconds (this is what makes the list self-healing / auto-redisplay).
+// RemoveDevice permanently removes a peer from all sources: the active peer
+// list, manual peers, and the known-devices cache. The device will only
+// reappear if mDNS re-discovers it or the user adds it by IP again.
 func (r *PeerRegistry) RemoveDevice(id string) {
 	r.mu.Lock()
 	delete(r.peers, id)
 	delete(r.lastSeen, id)
+	delete(r.known, id)
 	wasManual := false
 	if _, ok := r.manual[id]; ok {
 		wasManual = true
 		delete(r.manual, id)
 	}
-	r.ignore[id] = time.Now().Add(10 * time.Second)
+	r.ignore[id] = time.Now().Add(30 * time.Second)
 	r.mu.Unlock()
 	if wasManual {
 		r.SaveManual()
 	}
+	r.SaveKnown()
 }
 
 // ClearMDNS drops all discovered peers (keeps manual). Used on network change.
