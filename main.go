@@ -71,6 +71,7 @@ func runApp(port int) {
 	ctx := context.Background()
 	core.StartNetworkWatcher(ctx, id, reg)
 	core.StartKeepalive(ctx, reg, id)
+	core.StartLANScan(ctx, id, reg) // find peers that can't use mDNS (e.g. Windows)
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "swiftdrop",
