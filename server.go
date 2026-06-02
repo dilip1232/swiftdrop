@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 // Server hosts both the transfer API (peer-to-peer) and the local control UI.
@@ -119,6 +121,10 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/api/pair/claim", s.handlePairClaim) // peer presents a PIN (public)
+
+	// QR-based pairing endpoints.
+	mux.HandleFunc("/api/pair/qr-begin", s.requireToken(s.handleQRBegin)) // UI requests a QR code
+	mux.HandleFunc("/api/pair/qr-claim", s.handleQRClaim)                 // peer presents QR token (public)
 
 	// Static web UI — inject token into index.html so the embedded webview
 	// doesn't need a separate /api/token fetch (which can fail in Wails).
@@ -542,6 +548,49 @@ func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("pairing accepted for %s (%s)", req.Name, req.ID)
+	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
+}
+
+// ── QR pairing handlers ────────────────────────────────────────────────────
+
+func (s *Server) handleQRBegin(w http.ResponseWriter, _ *http.Request) {
+	token := Pairs.GenerateQRToken()
+	selfIP := LocalIP()
+	host := fmt.Sprintf("%s:%d", selfIP, s.ID.Port)
+	// The QR payload contains everything the scanner needs to pair.
+	payload := fmt.Sprintf(`{"host":%q,"id":%q,"token":%q}`, host, s.ID.ID, token)
+	png, err := qrcode.Encode(payload, qrcode.Medium, 256)
+	if err != nil {
+		http.Error(w, "qr generation failed", http.StatusInternalServerError)
+		return
+	}
+	WriteJSON(w, map[string]interface{}{
+		"qr_png":  png,
+		"token":   token,
+		"payload": payload,
+	})
+}
+
+func (s *Server) handleQRClaim(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	key, ok := Pairs.ClaimQRToken(req.Token, req.ID)
+	if !ok {
+		http.Error(w, "invalid or expired token", http.StatusForbidden)
+		return
+	}
+	log.Printf("QR pairing accepted for %s (%s)", req.Name, req.ID)
 	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
 }
 

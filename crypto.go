@@ -30,6 +30,11 @@ type PairStore struct {
 	pendPIN string    // 6-digit code shown to user
 	pendKey []byte    // random 32-byte key behind the PIN
 	pendExp time.Time // PIN expires after 60 s
+
+	// QR-based pairing: a long random token replaces the short PIN.
+	qrToken string    // 64-char hex token embedded in QR code
+	qrKey   []byte    // 32-byte AES key behind the token
+	qrExp   time.Time // token expires after 120 s
 }
 
 func NewPairStore() *PairStore {
@@ -73,6 +78,43 @@ func (ps *PairStore) ClaimPIN(pin, peerID string) ([]byte, bool) {
 	ps.keys[peerID] = key
 	ps.pendPIN = ""
 	ps.pendKey = nil
+	ps.Save()
+	return key, true
+}
+
+// ── QR-based pairing ──
+
+// GenerateQRToken creates a one-time pairing token (64 hex chars = 32 bytes
+// of entropy) and a corresponding AES key. The token is valid for 120 seconds.
+func (ps *PairStore) GenerateQRToken() string {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic(err)
+	}
+	tok := make([]byte, 32)
+	if _, err := rand.Read(tok); err != nil {
+		panic(err)
+	}
+	ps.qrToken = hex.EncodeToString(tok)
+	ps.qrKey = key
+	ps.qrExp = time.Now().Add(120 * time.Second)
+	return ps.qrToken
+}
+
+// ClaimQRToken verifies a peer's token. On success returns the shared key and
+// stores it under peerID.
+func (ps *PairStore) ClaimQRToken(token, peerID string) ([]byte, bool) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if ps.qrToken == "" || token != ps.qrToken || time.Now().After(ps.qrExp) {
+		return nil, false
+	}
+	key := ps.qrKey
+	ps.keys[peerID] = key
+	ps.qrToken = ""
+	ps.qrKey = nil
 	ps.Save()
 	return key, true
 }
