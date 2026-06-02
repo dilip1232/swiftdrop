@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-02
+
+### Added
+- **Windows cross-discovery** — LAN subnet scanner finds Windows devices that can't use mDNS
+- **Bidirectional announcements** — devices announce themselves to peers for instant mutual discovery
+- **Improved peer removal** — clicking ✕ permanently removes device from known-peers cache
+
+### Changed
+- **Core refactor** — shared logic moved to `swiftdrop-core` module (discovery, transfers, encryption, peer management)
+- Mac app is now a thin shell importing `swiftdrop-core`
+- Keepalive prober and network watcher use shared core implementations
+
+### Fixed
+- Removed device reappearing after a few seconds (keepalive re-adding from known cache)
+- Stale windows-build.yml removed from mac repo
+- Release workflow updated to clone core module for CI builds
+
 ## [0.1.0] - 2025-06-02
 
 ### Added
