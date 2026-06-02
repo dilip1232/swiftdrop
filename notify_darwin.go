@@ -26,9 +26,11 @@ import "unsafe"
 // Notify sends a macOS notification from within the SwiftDrop process,
 // so the notification centre shows SwiftDrop's icon instead of Script Editor's.
 func Notify(title, message string) {
-	ct := C.CString(title)
-	cm := C.CString(message)
-	defer C.free(unsafe.Pointer(ct))
-	defer C.free(unsafe.Pointer(cm))
-	go C.macNotify(ct, cm)
+	go func() {
+		ct := C.CString(title)
+		cm := C.CString(message)
+		C.macNotify(ct, cm)
+		C.free(unsafe.Pointer(ct))
+		C.free(unsafe.Pointer(cm))
+	}()
 }
