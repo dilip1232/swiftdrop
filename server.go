@@ -42,6 +42,18 @@ func NewServer(id Identity, reg *PeerRegistry, trk *Tracker) *Server {
 	return &Server{ID: id, Reg: reg, Trk: trk}
 }
 
+// normalizeIP strips the ::ffff: prefix from IPv6-mapped IPv4 addresses so
+// comparisons between Go's r.RemoteAddr (often IPv6-mapped) and plain IPv4
+// strings work correctly.
+func normalizeIP(ip string) string {
+	if parsed := net.ParseIP(ip); parsed != nil {
+		if v4 := parsed.To4(); v4 != nil {
+			return v4.String()
+		}
+	}
+	return ip
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -122,7 +134,7 @@ func (s *Server) Handler() http.Handler {
 		if peer, ok := s.Reg.Get(id); ok {
 			callerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 			peerIP, _, _ := net.SplitHostPort(peer.Host)
-			if callerIP != peerIP {
+			if normalizeIP(callerIP) != normalizeIP(peerIP) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -331,7 +343,7 @@ func (s *Server) handleAddPeer(w http.ResponseWriter, r *http.Request) {
 	if tok != s.ID.APIToken {
 		callerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 		announcedIP, _, _ := net.SplitHostPort(host)
-		if callerIP != announcedIP {
+		if normalizeIP(callerIP) != normalizeIP(announcedIP) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
