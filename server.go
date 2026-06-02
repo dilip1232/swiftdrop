@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 // Server hosts both the transfer API (peer-to-peer) and the local control UI.
@@ -38,6 +40,18 @@ const DefaultPort = 53317
 
 func NewServer(id Identity, reg *PeerRegistry, trk *Tracker) *Server {
 	return &Server{ID: id, Reg: reg, Trk: trk}
+}
+
+// normalizeIP strips the ::ffff: prefix from IPv6-mapped IPv4 addresses so
+// comparisons between Go's r.RemoteAddr (often IPv6-mapped) and plain IPv4
+// strings work correctly.
+func normalizeIP(ip string) string {
+	if parsed := net.ParseIP(ip); parsed != nil {
+		if v4 := parsed.To4(); v4 != nil {
+			return v4.String()
+		}
+	}
+	return ip
 }
 
 func (s *Server) Handler() http.Handler {
@@ -75,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/transfers", s.requireToken(s.handleTransfers))
 	mux.HandleFunc("/api/transfers/clear", s.requireToken(s.handleClearTransfers))
 	mux.HandleFunc("/api/transfers/cancel", s.requireToken(s.handleCancelTransfer))
+	mux.HandleFunc("/api/transfers/retry", s.requireToken(s.handleRetryTransfer))
 	mux.HandleFunc("/api/pick", s.requireToken(s.handlePick))
 	mux.HandleFunc("/api/open-folder", s.requireToken(func(w http.ResponseWriter, _ *http.Request) {
 		OpenFolder(DownloadDir())
@@ -110,15 +125,30 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	}))
 	// Public endpoint: remote device tells us to unpair them.
+	// Verify the caller's IP matches the registered peer to prevent spoofing.
 	mux.HandleFunc("/api/pair/remote-unpair", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
-		if id != "" {
-			Pairs.Unpair(id)
-			log.Printf("remote-unpair: %s unpaired us", id)
+		if id == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
+		if peer, ok := s.Reg.Get(id); ok {
+			callerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+			peerIP, _, _ := net.SplitHostPort(peer.Host)
+			if normalizeIP(callerIP) != normalizeIP(peerIP) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		Pairs.Unpair(id)
+		log.Printf("remote-unpair: %s unpaired us", id)
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/api/pair/claim", s.handlePairClaim) // peer presents a PIN (public)
+
+	// QR-based pairing endpoints.
+	mux.HandleFunc("/api/pair/qr-begin", s.requireToken(s.handleQRBegin)) // UI requests a QR code
+	mux.HandleFunc("/api/pair/qr-claim", s.handleQRClaim)                 // peer presents QR token (public)
 
 	// Static web UI — inject token into index.html so the embedded webview
 	// doesn't need a separate /api/token fetch (which can fail in Wails).
@@ -181,7 +211,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	dlDir := DownloadDir()
 	if origSize > 0 {
-		if free, err := DiskFree(dlDir); err == nil && uint64(origSize) > free-100<<20 {
+		if free, err := DiskFree(dlDir); err == nil && uint64(origSize)+100<<20 > free {
 			http.Error(w, "not enough disk space", http.StatusInsufficientStorage)
 			return
 		}
@@ -240,7 +270,9 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n, err := io.Copy(f, body)
+	// Hash on-the-fly so we never re-read the file from disk.
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), body)
 	closeErr := f.Close()
 	if err != nil {
 		s.Trk.Finish(tr, err)
@@ -255,19 +287,13 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 
 	// Verify SHA-256 integrity if the sender included a hash.
 	if expected := r.Header.Get("X-SHA256"); expected != "" {
-		rf, err := os.Open(dest)
-		if err == nil {
-			h := sha256.New()
-			io.Copy(h, rf)
-			rf.Close()
-			actual := hex.EncodeToString(h.Sum(nil))
-			if actual != expected {
-				s.Trk.Finish(tr, fmt.Errorf("hash mismatch"))
-				os.Remove(dest)
-				http.Error(w, "integrity check failed", http.StatusBadRequest)
-				log.Printf("inbox %s: hash mismatch (expected %s, got %s)", dest, expected[:12], actual[:12])
-				return
-			}
+		actual := hex.EncodeToString(h.Sum(nil))
+		if actual != expected {
+			s.Trk.Finish(tr, fmt.Errorf("hash mismatch"))
+			os.Remove(dest)
+			http.Error(w, "integrity check failed", http.StatusBadRequest)
+			log.Printf("inbox %s: hash mismatch (expected %s, got %s)", dest, expected[:12], actual[:12])
+			return
 		}
 	}
 
@@ -309,6 +335,19 @@ func (s *Server) handleAddPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	if !strings.Contains(host, ":") {
 		host = fmt.Sprintf("%s:%d", host, DefaultPort)
+	}
+
+	// If the request doesn't carry the local API token it's a remote peer
+	// announcing itself — verify the announced host matches the caller's IP
+	// so a third party can't inject arbitrary peers.
+	tok := r.Header.Get("X-API-Token")
+	if tok != s.ID.APIToken {
+		callerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+		announcedIP, _, _ := net.SplitHostPort(host)
+		if normalizeIP(callerIP) != normalizeIP(announcedIP) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 	}
 
 	peer, err := ProbePeer(host)
@@ -353,12 +392,17 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown device", http.StatusNotFound)
 		return
 	}
-	if Pairs.IsPaired(peer.ID) == nil {
+	key := Pairs.IsPaired(peer.ID)
+	if key == nil {
 		http.Error(w, "pair with this device first", http.StatusForbidden)
 		return
 	}
 
-	if err := SendToPeerWithOpts(r.Context(), peer, s.ID, name, r.Body, r.ContentLength, r.ContentLength, false); err != nil {
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(EncryptStream(pw, r.Body, key))
+	}()
+	if err := SendToPeerWithOpts(r.Context(), peer, s.ID, name, pr, EncryptedSize(r.ContentLength), r.ContentLength, true); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		log.Printf("send to %s: %v", peer.Name, err)
 		return
@@ -412,6 +456,23 @@ func (s *Server) handleClearTransfers(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleCancelTransfer(w http.ResponseWriter, r *http.Request) {
 	s.Trk.CancelTransfer(r.URL.Query().Get("id"))
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleRetryTransfer(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	filePath, peerID, ok := s.Trk.RetryTransfer(id)
+	if !ok {
+		http.Error(w, "transfer not found or not retryable", http.StatusNotFound)
+		return
+	}
+	peer, found := s.Reg.Get(peerID)
+	if !found {
+		http.Error(w, "peer no longer available", http.StatusNotFound)
+		return
+	}
+	go SendFileByPath(peer, s.ID, filePath, s.Trk)
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, "ok")
 }
 
 func (s *Server) handlePick(w http.ResponseWriter, r *http.Request) {
@@ -542,6 +603,49 @@ func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("pairing accepted for %s (%s)", req.Name, req.ID)
+	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
+}
+
+// ── QR pairing handlers ────────────────────────────────────────────────────
+
+func (s *Server) handleQRBegin(w http.ResponseWriter, _ *http.Request) {
+	token := Pairs.GenerateQRToken()
+	selfIP := LocalIP()
+	host := fmt.Sprintf("%s:%d", selfIP, s.ID.Port)
+	// The QR payload contains everything the scanner needs to pair.
+	payload := fmt.Sprintf(`{"host":%q,"id":%q,"token":%q}`, host, s.ID.ID, token)
+	png, err := qrcode.Encode(payload, qrcode.Medium, 256)
+	if err != nil {
+		http.Error(w, "qr generation failed", http.StatusInternalServerError)
+		return
+	}
+	WriteJSON(w, map[string]interface{}{
+		"qr_png":  png,
+		"token":   token,
+		"payload": payload,
+	})
+}
+
+func (s *Server) handleQRClaim(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	key, ok := Pairs.ClaimQRToken(req.Token, req.ID)
+	if !ok {
+		http.Error(w, "invalid or expired token", http.StatusForbidden)
+		return
+	}
+	log.Printf("QR pairing accepted for %s (%s)", req.Name, req.ID)
 	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
 }
 

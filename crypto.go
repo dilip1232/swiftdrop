@@ -27,9 +27,15 @@ type PairStore struct {
 
 	// Pending pairing offer: this device generated a PIN and is waiting for
 	// a peer to present it.
-	pendPIN string    // 6-digit code shown to user
-	pendKey []byte    // random 32-byte key behind the PIN
-	pendExp time.Time // PIN expires after 60 s
+	pendPIN   string    // 6-digit code shown to user
+	pendKey   []byte    // random 32-byte key behind the PIN
+	pendExp   time.Time // PIN expires after 60 s
+	pendFails int       // consecutive wrong attempts; PIN voided after 3
+
+	// QR-based pairing: a long random token replaces the short PIN.
+	qrToken string    // 64-char hex token embedded in QR code
+	qrKey   []byte    // 32-byte AES key behind the token
+	qrExp   time.Time // token expires after 120 s
 }
 
 func NewPairStore() *PairStore {
@@ -58,6 +64,7 @@ func (ps *PairStore) GeneratePIN() string {
 	ps.pendPIN = fmt.Sprintf("%06d", n.Int64())
 	ps.pendKey = key
 	ps.pendExp = time.Now().Add(60 * time.Second)
+	ps.pendFails = 0
 	return ps.pendPIN
 }
 
@@ -66,13 +73,60 @@ func (ps *PairStore) GeneratePIN() string {
 func (ps *PairStore) ClaimPIN(pin, peerID string) ([]byte, bool) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	if ps.pendPIN == "" || pin != ps.pendPIN || time.Now().After(ps.pendExp) {
+	if ps.pendPIN == "" || time.Now().After(ps.pendExp) {
+		return nil, false
+	}
+	if pin != ps.pendPIN {
+		ps.pendFails++
+		if ps.pendFails >= 3 {
+			log.Printf("pairing: PIN invalidated after %d failed attempts", ps.pendFails)
+			ps.pendPIN = ""
+			ps.pendKey = nil
+		}
 		return nil, false
 	}
 	key := ps.pendKey
 	ps.keys[peerID] = key
 	ps.pendPIN = ""
 	ps.pendKey = nil
+	ps.pendFails = 0
+	ps.Save()
+	return key, true
+}
+
+// ── QR-based pairing ──
+
+// GenerateQRToken creates a one-time pairing token (64 hex chars = 32 bytes
+// of entropy) and a corresponding AES key. The token is valid for 120 seconds.
+func (ps *PairStore) GenerateQRToken() string {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic(err)
+	}
+	tok := make([]byte, 32)
+	if _, err := rand.Read(tok); err != nil {
+		panic(err)
+	}
+	ps.qrToken = hex.EncodeToString(tok)
+	ps.qrKey = key
+	ps.qrExp = time.Now().Add(120 * time.Second)
+	return ps.qrToken
+}
+
+// ClaimQRToken verifies a peer's token. On success returns the shared key and
+// stores it under peerID.
+func (ps *PairStore) ClaimQRToken(token, peerID string) ([]byte, bool) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if ps.qrToken == "" || token != ps.qrToken || time.Now().After(ps.qrExp) {
+		return nil, false
+	}
+	key := ps.qrKey
+	ps.keys[peerID] = key
+	ps.qrToken = ""
+	ps.qrKey = nil
 	ps.Save()
 	return key, true
 }
@@ -145,7 +199,7 @@ func (ps *PairStore) Load() {
 //
 // Each chunk: up to 64 KiB of plaintext, encrypted with nonce = baseNonce XOR chunkIndex.
 
-const ChunkPlain = 64 * 1024
+const ChunkPlain = 256 * 1024
 
 // EncryptedSize returns the total byte count of the encrypted stream for a
 // given plaintext size.  Format: 12-byte nonce + N*(4-byte len + ciphertext) + 4-byte end.

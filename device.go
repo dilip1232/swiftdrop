@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 )
@@ -292,6 +293,7 @@ func (r *PeerRegistry) List() []Peer {
 	for _, p := range r.peers {
 		out = append(out, p)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
