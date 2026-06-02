@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	core "swiftdrop-core"
@@ -61,6 +60,7 @@ func runApp(port int) {
 	app := application.New(application.Options{
 		Name:        "SwiftDrop",
 		Description: "Fast LAN file transfers",
+		Icon:        core.AppIcon(), // 256×256 icon for window title bar + taskbar
 		// Serve the UI + API through the same Go mux the peers use.
 		Assets: application.AssetOptions{Handler: srv.Handler()},
 	})
@@ -145,27 +145,30 @@ func runApp(port int) {
 	}
 }
 
-// ensureFirewall adds Windows Firewall inbound rules for the SwiftDrop app
-// port (TCP) and mDNS (UDP 5353). Fails silently if not running as admin —
-// the user will need to accept the Windows Firewall prompt on first launch
-// or run as admin once.
+// ensureFirewall adds a program-based Windows Firewall inbound rule that
+// allows ALL traffic for this executable. This is more reliable than
+// port-based rules and is the standard approach for desktop apps.
+// Fails silently if not running as admin — user should run as admin once
+// or use the provided setup-firewall.bat.
 func ensureFirewall(port int) {
-	portStr := strconv.Itoa(port)
-	// SwiftDrop TCP — required for file transfers and API.
-	exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
-		"name=SwiftDrop TCP In",
-		"dir=in", "action=allow", "protocol=TCP",
-		"localport="+portStr,
-		"profile=private",
-	).Run()
-	// mDNS UDP — required for automatic device discovery.
-	exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
-		"name=SwiftDrop mDNS In",
-		"dir=in", "action=allow", "protocol=UDP",
-		"localport=5353",
-		"profile=private",
-	).Run()
-	log.Printf("firewall: rules requested for TCP/%s and UDP/5353", portStr)
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Printf("firewall: cannot determine exe path: %v", err)
+		return
+	}
+	// Program-based rule: allow all inbound for this exe.
+	out, err := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
+		"name=SwiftDrop",
+		"dir=in", "action=allow",
+		"program="+exePath,
+		"enable=yes",
+		"profile=private,public",
+	).CombinedOutput()
+	if err != nil {
+		log.Printf("firewall: could not add rule (run as admin once): %v — %s", err, string(out))
+	} else {
+		log.Printf("firewall: rule added for %s", exePath)
+	}
 }
 
 // runHeadless runs the core server and discovery without any UI — useful for
