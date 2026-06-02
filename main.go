@@ -56,6 +56,7 @@ func runApp(port int) {
 	defer cancel()
 	core.StartNetworkWatcher(ctx, id, reg)
 	core.StartKeepalive(ctx, reg, id)
+	core.StartLANScan(ctx, id, reg) // fallback: subnet scan when mDNS is blocked
 
 	app := application.New(application.Options{
 		Name:        "SwiftDrop",
