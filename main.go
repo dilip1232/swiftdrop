@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	core "swiftdrop-core"
@@ -43,6 +45,9 @@ func runApp(port int) {
 	reg.LoadManual()
 	trk := core.NewTracker()
 	core.InitPairStore()
+
+	// Best-effort Windows Firewall rules so mDNS and transfers work.
+	ensureFirewall(id.Port)
 
 	srv := core.NewServer(id, reg, trk)
 	srv.WebFS = webFS
@@ -109,7 +114,7 @@ func runApp(port int) {
 
 	// System tray — left-click toggles the window, right-click shows menu.
 	tray := app.SystemTray.New()
-	tray.SetTemplateIcon(core.TrayIcon())
+	tray.SetIcon(core.TrayIconColored()) // colored icon for Windows system tray
 	tray.SetTooltip("SwiftDrop")
 
 	tray.OnClick(func() {
@@ -138,6 +143,29 @@ func runApp(port int) {
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// ensureFirewall adds Windows Firewall inbound rules for the SwiftDrop app
+// port (TCP) and mDNS (UDP 5353). Fails silently if not running as admin —
+// the user will need to accept the Windows Firewall prompt on first launch
+// or run as admin once.
+func ensureFirewall(port int) {
+	portStr := strconv.Itoa(port)
+	// SwiftDrop TCP — required for file transfers and API.
+	exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
+		"name=SwiftDrop TCP In",
+		"dir=in", "action=allow", "protocol=TCP",
+		"localport="+portStr,
+		"profile=private",
+	).Run()
+	// mDNS UDP — required for automatic device discovery.
+	exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
+		"name=SwiftDrop mDNS In",
+		"dir=in", "action=allow", "protocol=UDP",
+		"localport=5353",
+		"profile=private",
+	).Run()
+	log.Printf("firewall: rules requested for TCP/%s and UDP/5353", portStr)
 }
 
 // runHeadless runs the core server and discovery without any UI — useful for
