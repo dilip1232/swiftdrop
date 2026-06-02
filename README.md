@@ -10,19 +10,22 @@ files land in `~/Downloads/SwiftDrop/`.
 
 ## Features
 
-- **Device pairing** — PIN-based pairing before any file transfer; paired keys are persisted
+- **AES-256-GCM encryption** — all transfers between paired devices are encrypted end-to-end
+- **Device pairing** — PIN-based and QR code pairing; paired keys are persisted across restarts
 - **Bilateral unpairing** — unpairing on one device notifies the other
 - **Auto-close pairing dialog** — when the remote device confirms the PIN, the local dialog closes automatically
 - **SHA-256 integrity verification** — sender hashes the file, receiver verifies after write; corrupted files are rejected and deleted
-- **Live transfer progress** — real-time progress bars and speed display that survive closing the drawer
+- **Live transfer progress** — real-time progress bars with transferred data (MB/GB), percentage, and speed; survives closing the drawer
+- **Retry failed transfers** — retry button on failed/canceled outbound sends
 - **Open folder** — click the folder icon next to a completed transfer to open `~/Downloads/SwiftDrop/` in Finder
 - **Native macOS notifications** — transfer notifications show the SwiftDrop app icon (not Script Editor)
-- **Cancel transfers** — cancel an in-flight send from the UI
+- **Cancel transfers** — cancel an in-flight send from the UI; connection is closed immediately
 - **Stall detection** — 30s response header timeout detects dead peers
 - **Rounded corners** — Lunar-style compact UI with CSS clip-path rounded corners and transparent window background
 - **File picker re-shows window** — the drawer reappears after the native file picker closes
 - **No file size cap** — transfers of any size; disk space checked before writing
 - **Drag-and-drop** — drop files directly onto the drawer
+- **LAN subnet scan** — fallback discovery for networks where mDNS is unavailable
 
 ## Speed: no compromise
 
@@ -106,8 +109,13 @@ The same Go `http.Handler` serves two transports: the LAN port `:53317`
 | POST | `/api/peers/remove` | drop a manual peer by `{"id":"..."}` |
 | GET | `/` | the drawer UI |
 
+## Shared Core
+
+The transfer engine, discovery, encryption, and HTTP API all live in
+[swiftdrop-core](https://github.com/dilip1232/swiftdrop-core) — a shared Go
+module imported by all platform apps. See the core README for full API docs.
+
 ## Roadmap
 
-- Windows support
 - Optional self-signed TLS with cached fingerprint
 - Resume interrupted transfers via HTTP range
