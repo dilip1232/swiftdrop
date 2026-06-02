@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0 — Initial Release
+## v0.1.0 — Initial Release
 
 ### Features
 - **Full-window UI** with system tray integration — click the tray icon to show/hide
