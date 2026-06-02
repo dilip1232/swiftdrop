@@ -147,6 +147,7 @@ class MainActivity : AppCompatActivity() {
             setBeepEnabled(false)
             setOrientationLocked(true)
             setCameraId(0)
+            setCaptureActivity(ScannerActivity::class.java)
         }
         scanQR.launch(opts)
     }
