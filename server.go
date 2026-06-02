@@ -89,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/transfers", s.requireToken(s.handleTransfers))
 	mux.HandleFunc("/api/transfers/clear", s.requireToken(s.handleClearTransfers))
 	mux.HandleFunc("/api/transfers/cancel", s.requireToken(s.handleCancelTransfer))
+	mux.HandleFunc("/api/transfers/retry", s.requireToken(s.handleRetryTransfer))
 	mux.HandleFunc("/api/pick", s.requireToken(s.handlePick))
 	mux.HandleFunc("/api/open-folder", s.requireToken(func(w http.ResponseWriter, _ *http.Request) {
 		OpenFolder(DownloadDir())
@@ -455,6 +456,23 @@ func (s *Server) handleClearTransfers(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleCancelTransfer(w http.ResponseWriter, r *http.Request) {
 	s.Trk.CancelTransfer(r.URL.Query().Get("id"))
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleRetryTransfer(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	filePath, peerID, ok := s.Trk.RetryTransfer(id)
+	if !ok {
+		http.Error(w, "transfer not found or not retryable", http.StatusNotFound)
+		return
+	}
+	peer, found := s.Reg.Get(peerID)
+	if !found {
+		http.Error(w, "peer no longer available", http.StatusNotFound)
+		return
+	}
+	go SendFileByPath(peer, s.ID, filePath, s.Trk)
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, "ok")
 }
 
 func (s *Server) handlePick(w http.ResponseWriter, r *http.Request) {

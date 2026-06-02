@@ -72,6 +72,8 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 	}
 
 	tr := trk.Start(name, fi.Size(), peer.Name, "send")
+	tr.FilePath = path
+	tr.PeerID = peer.ID
 	ctx, cancel := context.WithCancel(context.Background())
 	trk.SetCancel(tr, cancel)
 	defer cancel()

@@ -20,6 +20,13 @@ type Transfer struct {
 	Err    string `json:"err,omitempty"`
 
 	Cancel context.CancelFunc `json:"-"` // aborts the in-flight request
+
+	// For retry: stored only for outbound sends
+	FilePath string `json:"-"`
+	PeerID   string `json:"-"`
+
+	// Computed for JSON output
+	Retryable bool `json:"retryable,omitempty"`
 }
 
 // Tracker holds recent + active transfers so the UI can render progress even
@@ -83,6 +90,27 @@ func (t *Tracker) CancelTransfer(id string) {
 	}
 }
 
+// RetryTransfer removes a failed/canceled outbound send and returns its path
+// and peer ID so the caller can re-invoke SendFileByPath.
+func (t *Tracker) RetryTransfer(id string) (filePath, peerID string, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tr := t.items[id]
+	if tr == nil || tr.Dir != "send" || (tr.Status != "error" && tr.Status != "canceled") || tr.FilePath == "" {
+		return "", "", false
+	}
+	filePath, peerID = tr.FilePath, tr.PeerID
+	delete(t.items, id)
+	kept := t.order[:0:0]
+	for _, oid := range t.order {
+		if oid != id {
+			kept = append(kept, oid)
+		}
+	}
+	t.order = kept
+	return filePath, peerID, true
+}
+
 // ClearFinished drops everything that isn't actively sending.
 func (t *Tracker) ClearFinished() {
 	t.mu.Lock()
@@ -105,10 +133,12 @@ func (t *Tracker) List() []Transfer {
 	out := make([]Transfer, 0, len(t.order))
 	for _, id := range t.order {
 		tr := t.items[id]
+		retryable := tr.Dir == "send" && (tr.Status == "error" || tr.Status == "canceled") && tr.FilePath != ""
 		out = append(out, Transfer{
 			ID: tr.ID, Name: tr.Name, Size: tr.Size,
 			Sent: atomic.LoadInt64(&tr.Sent), Status: tr.Status,
 			Peer: tr.Peer, Dir: tr.Dir, Err: tr.Err,
+			Retryable: retryable,
 		})
 	}
 	return out
