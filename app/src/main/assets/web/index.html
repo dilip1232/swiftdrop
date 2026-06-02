@@ -50,7 +50,7 @@
   .pair-btn:hover { border-color: var(--accent); color: var(--accent); }
   .pair-btn.paired { color: var(--ok); border-color: var(--ok); }
   .pair-btn.paired:hover { color: var(--err); border-color: var(--err); }
-  .device .rm { flex: none; color: var(--muted); font-size: 18px; line-height: 1; padding: 2px 4px; }
+  .device .rm { flex: none; color: var(--muted); font-size: 12px; line-height: 1; padding: 2px 6px; cursor: pointer; border: 1px solid var(--border); border-radius: 6px; }
   .empty { padding: 22px 14px; text-align: center; color: var(--muted); font-size: 13.5px; background: var(--panel); border-radius: 14px; }
   .addrow { display: flex; gap: 8px; margin-top: 8px; }
   .addrow input { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 12px 14px; border-radius: 13px; border: 1.5px solid var(--border); background: var(--panel); color: var(--text); }
@@ -81,6 +81,8 @@
   .file.done .pct { color: var(--ok); } .file.err .pct { color: var(--err); }
   .file .cancel { color: var(--muted); font-size: 20px; line-height: 1; padding: 4px 8px; }
   .file .cancel:active { color: var(--err); }
+  .file .retry { color: var(--accent); font-size: 11px; font-weight: 600; padding: 3px 8px; border: 1px solid var(--accent); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .file .retry:active { background: var(--accent); color: #fff; }
   .file .openfolder { color: var(--muted); font-size: 15px; padding: 4px 6px; cursor: pointer; opacity: .5; text-decoration: none; }
   .file .openfolder:active { color: var(--accent); opacity: 1; }
   .ip { color: var(--muted); }
@@ -115,6 +117,9 @@
   .pin-input { flex: 1; font-family: monospace; font-size: 22px; letter-spacing: 8px; text-align: center; padding: 14px; border-radius: 13px; border: 1.5px solid var(--border); background: var(--panel-2); color: var(--text); outline: none; -webkit-appearance: none; }
   .pin-input:focus { border-color: var(--accent); }
   .pair-submit { flex: none; padding: 14px 20px; }
+  .qr-container { text-align: center; padding: 10px 0; }
+  .qr-container img { border-radius: 12px; background: #fff; padding: 10px; max-width: 220px; }
+  .qr-or { color: var(--muted); font-size: 12px; margin: 12px 0 8px; text-align: center; }
 </style>
 </head>
 <body>
@@ -159,8 +164,16 @@
     </div>
     <div id="pairStep1" class="pair-step">
       <p style="margin:0 0 14px;color:var(--muted);font-size:14px">Pair with <b id="pairDevName"></b>:</p>
+      <button class="pair-option" id="pairScanQR">Scan QR Code</button>
+      <button class="pair-option ghost" id="pairQR">Show QR Code</button>
+      <div class="qr-or">— or use PIN —</div>
       <button class="pair-option" id="pairGenerate">Generate PIN on this device</button>
       <button class="pair-option ghost" id="pairEnter">I have a PIN from the other device</button>
+    </div>
+    <div id="pairStepQR" class="pair-step" style="display:none">
+      <p style="margin:0 0 10px;color:var(--muted);font-size:14px">Scan this QR code with the other device:</p>
+      <div class="qr-container"><img id="qrImage" src="" alt="QR Code"></div>
+      <p style="margin:10px 0 0;color:var(--muted);font-size:12px">Expires in 120 seconds</p>
     </div>
     <div id="pairStep2" class="pair-step" style="display:none">
       <p style="margin:0 0 10px;color:var(--muted);font-size:14px">Share this PIN with the other device:</p>
@@ -169,9 +182,9 @@
     </div>
     <div id="pairStep3" class="pair-step" style="display:none">
       <p style="margin:0 0 12px;color:var(--muted);font-size:14px">Enter the PIN shown on the other device:</p>
-      <div style="display:flex;gap:10px">
+      <div style="display:flex;flex-direction:column;gap:10px">
         <input type="text" id="pinInput" class="pin-input" maxlength="6" placeholder="000000" autocomplete="off" inputmode="numeric">
-        <button id="pinSubmit" class="pair-submit">Pair</button>
+        <button id="pinSubmit" class="pair-submit" style="width:100%">Pair</button>
       </div>
       <p id="pairError" style="margin:10px 0 0;color:var(--err);font-size:13px;display:none"></p>
     </div>
@@ -235,7 +248,7 @@ function renderDevices() {
   for (const d of state.devices) {
     const row = document.createElement("div");
     row.className = "device" + (d.id === state.target ? " active" : "");
-    const sub = esc(d.host || d.platform || "device");
+    const sub = esc((d.host || "").replace(/:\d+$/, "") || d.platform || "device");
     const paired = state.pairedIds && state.pairedIds.has(d.id);
     row.innerHTML = `<div class="ic">${platformIcon(d.platform)}</div>
       <div style="flex:1;min-width:0"><div class="nm">${esc(d.name)}</div><div class="pf">${sub}</div></div>
@@ -265,15 +278,17 @@ function pickFiles() {
 const rates = {}; // transfer id -> {sent, t} for speed calc
 
 function fileRow(opts) {
-  const { name, size, pct, status, label, sub, cancelId, showFolder } = opts;
+  const { name, size, pct, status, label, sub, cancelId, retryId, showFolder } = opts;
   const r = document.createElement("div");
   r.className = "file " + (status || "");
   r.innerHTML = `<div class="meta">
       <div class="name">${esc(name)}</div><div class="sub">${sub}</div>
       <div class="bar"><i style="width:${pct}%"></i></div></div>
     <div class="pct">${label}</div>` +
+    (retryId ? `<div class="retry">Retry</div>` : "") +
     (showFolder ? `<span class="openfolder" title="Open folder"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>` : "") +
     (cancelId ? `<div class="cancel">×</div>` : "");
+  if (retryId) r.querySelector(".retry").onclick = () => retryTransfer(retryId);
   if (cancelId) r.querySelector(".cancel").onclick = () => cancelTransfer(cancelId);
   if (showFolder) r.querySelector(".openfolder").onclick = () => openFolder();
   return r;
@@ -291,12 +306,15 @@ function renderQueue() {
     const recv = t.dir === "recv";
     const label = t.status === "done" ? (recv ? "Received" : "Sent")
       : t.status === "error" ? "Failed" : t.status === "canceled" ? "Canceled" : pct + "%";
-    let sub = (recv ? "↓ from " : "↑ to ") + esc(t.peer || "") + " · " + fmtSize(t.size);
+    let sub = (recv ? "↓ from " : "↑ to ") + esc(t.peer || "");
+    if (sending) { sub += " · " + fmtSize(t.sent) + " / " + fmtSize(t.size); }
+    else { sub += " · " + fmtSize(t.size); }
     if (sending && t.rate) sub += " · " + fmtSize(t.rate) + "/s";
     q.appendChild(fileRow({
       name: t.name, size: t.size, pct, sub, label,
       status: t.status === "error" ? "err" : t.status === "done" ? "done" : t.status === "canceled" ? "err" : "",
       cancelId: (sending && !recv) ? t.id : null,
+      retryId: t.retryable ? t.id : null,
       showFolder: t.status === "done"
     }));
   }
@@ -305,6 +323,15 @@ function renderQueue() {
 
 async function cancelTransfer(id) {
   try { await apiFetch("/api/transfers/cancel?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
+}
+
+async function retryTransfer(id) {
+  try {
+    const res = await apiFetch("/api/transfers/retry?id=" + encodeURIComponent(id), { method: "POST" });
+    if (!res.ok) { toast(await res.text() || "Retry failed", true); return; }
+    toast("Retrying…");
+    pollTransfers();
+  } catch { toast("Retry failed", true); }
 }
 
 function updateSend() {
@@ -406,6 +433,7 @@ function openPairModal(deviceId, deviceName) {
   pairTargetName = deviceName;
   $("#pairDevName").textContent = deviceName;
   $("#pairStep1").style.display = "";
+  $("#pairStepQR").style.display = "none";
   $("#pairStep2").style.display = "none";
   $("#pairStep3").style.display = "none";
   $("#pairError").style.display = "none";
@@ -436,6 +464,28 @@ async function pairGenerate() {
   } catch { toast("Failed to start pairing", true); closePairModal(); }
 }
 
+async function pairShowQR() {
+  try {
+    const r = await (await apiFetch("/api/pair/qr-begin", { method: "POST" })).json();
+    // Android returns qr_png as a plain base64 string.
+    $("#qrImage").src = "data:image/png;base64," + r.qr_png;
+    $("#pairStep1").style.display = "none";
+    $("#pairStepQR").style.display = "";
+    clearInterval(pairPollTimer);
+    pairPollTimer = setInterval(async () => {
+      try {
+        const s = await (await apiFetch("/api/pair/status?id=" + encodeURIComponent(pairTargetId))).json();
+        if (s.paired) {
+          clearInterval(pairPollTimer); pairPollTimer = null;
+          toast(`Paired with ${pairTargetName}!`);
+          closePairModal();
+          refreshPairedStatus();
+        }
+      } catch {}
+    }, 2000);
+  } catch { toast("Failed to generate QR code", true); closePairModal(); }
+}
+
 function pairShowInput() {
   $("#pairStep1").style.display = "none";
   $("#pairStep3").style.display = "";
@@ -459,6 +509,24 @@ async function pairSubmitPin() {
 
 function startPairing(deviceId, deviceName) { openPairModal(deviceId, deviceName); }
 
+function pairScanQR() {
+  if (window.AndroidBridge && AndroidBridge.scanQRCode) {
+    closePairModal();
+    AndroidBridge.scanQRCode();
+  } else {
+    toast("QR scanning is only available on Android", true);
+  }
+}
+
+window.onQRPairResult = function(ok, err) {
+  if (ok) {
+    toast("Paired via QR code!");
+    refreshPairedStatus();
+  } else {
+    toast(err || "QR pairing failed", true);
+  }
+};
+
 async function unpairDevice(id) {
   try {
     await apiFetch("/api/pair/unpair?id=" + encodeURIComponent(id), { method: "POST" });
@@ -472,6 +540,8 @@ async function unpairDevice(id) {
 // Pairing modal wiring
 $("#pairClose").addEventListener("click", closePairModal);
 $("#pairModal").addEventListener("click", e => { if (e.target === $("#pairModal")) closePairModal(); });
+$("#pairScanQR").addEventListener("click", pairScanQR);
+$("#pairQR").addEventListener("click", pairShowQR);
 $("#pairGenerate").addEventListener("click", pairGenerate);
 $("#pairEnter").addEventListener("click", pairShowInput);
 $("#pinSubmit").addEventListener("click", pairSubmitPin);

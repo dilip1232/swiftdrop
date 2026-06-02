@@ -4,9 +4,14 @@ import android.content.ContentValues
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import android.graphics.Bitmap
+import android.util.Base64
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 
 /**
  * The peer-facing + UI HTTP server. Mirrors the Mac app's contract:
@@ -33,6 +38,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
             uri == "/api/transfers" -> withToken(session) { json(transfersJson()) }
             uri == "/api/transfers/clear" -> withToken(session) { clearFinished(); json("""{"ok":true}""") }
             uri == "/api/transfers/cancel" -> withToken(session) { cancelTransfer(session); json("""{"ok":true}""") }
+            uri == "/api/transfers/retry" && session.method == Method.POST -> withToken(session) { retryTransfer(session) }
             uri == "/api/send-path" && session.method == Method.POST -> withToken(session) { handleSend(session) }
             uri == "/api/peers/add" && session.method == Method.POST -> handleAddPeer(session) // public — peers announce themselves
             uri == "/api/peers/remove" && session.method == Method.POST -> withToken(session) { handleRemovePeer(session) }
@@ -58,6 +64,9 @@ class HttpServer : NanoHTTPD(State.PORT) {
                 json("""{"ok":true}""")
             }
             uri == "/api/pair/claim" && session.method == Method.POST -> handlePairClaim(session)
+            // QR-based pairing
+            uri == "/api/pair/qr-begin" -> withToken(session) { handleQRBegin() }
+            uri == "/api/pair/qr-claim" && session.method == Method.POST -> handleQRClaim(session)
             uri == "/" || uri == "/index.html" -> asset("web/index.html", "text/html")
             else -> asset("web$uri", mimeFor(uri))
         }
@@ -134,7 +143,13 @@ class HttpServer : NanoHTTPD(State.PORT) {
                 if (encrypted) {
                     val key = PairStore.isPaired(senderId)
                         ?: throw IllegalStateException("not paired with sender")
-                    Crypto.decryptStream(out, input, key)
+                    // Wrap output to track decrypted bytes for progress.
+                    val counting = object : java.io.OutputStream() {
+                        override fun write(b: Int) { out.write(b); tr.sent.incrementAndGet() }
+                        override fun write(b: ByteArray, off: Int, len: Int) { out.write(b, off, len); tr.sent.addAndGet(len.toLong()) }
+                        override fun flush() = out.flush()
+                    }
+                    Crypto.decryptStream(counting, input, key)
                 } else {
                     val buf = ByteArray(256 * 1024)
                     var remaining = if (len >= 0) len else Long.MAX_VALUE
@@ -276,7 +291,26 @@ class HttpServer : NanoHTTPD(State.PORT) {
         State.transfers.firstOrNull { it.id == id && it.status == "sending" }?.let {
             it.canceled = true
             it.status = "canceled"
+            // Force-disconnect the HTTP connection to abort the transfer immediately
+            Thread { runCatching { it.conn?.disconnect() } }.start()
         }
+    }
+
+    private fun retryTransfer(session: IHTTPSession): Response {
+        val id = session.parameters["id"]?.firstOrNull()
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "id required")
+        val old = State.transfers.firstOrNull { it.id == id && (it.status == "error" || it.status == "canceled") && it.dir == "send" }
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "transfer not found or not retryable")
+        val uriStr = old.uri
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "no URI stored")
+        val peerId = old.peerId
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "no peer stored")
+        val peer = State.peer(peerId)
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "peer no longer available")
+        State.transfers.remove(old)
+        val uri = Uri.parse(uriStr)
+        Thread { Sender.sendUri(peer, uri) }.start()
+        return json("""{"ok":true}""")
     }
 
     private fun transfersJson(): String {
@@ -286,6 +320,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
                 put("id", t.id); put("name", t.name); put("size", t.size)
                 put("sent", t.sent.get()); put("status", t.status); put("peer", t.peer); put("dir", t.dir)
                 t.err?.let { put("err", it) }
+                if (t.dir == "send" && (t.status == "error" || t.status == "canceled") && t.uri != null) put("retryable", true)
             })
         }
         return arr.toString()
@@ -375,6 +410,40 @@ class HttpServer : NanoHTTPD(State.PORT) {
         }
         PairStore.storeKey(deviceId, keyBytes)
         return json("""{"ok":true}""")
+    }
+
+    private fun handleQRBegin(): Response {
+        val token = PairStore.generateQRToken()
+        val ip = State.localIp()
+        val host = "$ip:${State.PORT}"
+        val payload = JSONObject().apply {
+            put("host", host); put("id", State.deviceId); put("token", token)
+        }.toString()
+        // Generate QR code PNG.
+        val writer = QRCodeWriter()
+        val matrix = writer.encode(payload, BarcodeFormat.QR_CODE, 256, 256)
+        val w = matrix.width; val h = matrix.height
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+        for (x in 0 until w) for (y in 0 until h)
+            bmp.setPixel(x, y, if (matrix.get(x, y)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt())
+        val baos = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
+        val pngB64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+        return json(JSONObject().apply {
+            put("qr_png", pngB64); put("token", token); put("payload", payload)
+        }.toString())
+    }
+
+    private fun handleQRClaim(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        session.parseBody(body)
+        val obj = JSONObject(body["postData"] ?: "{}")
+        val token = obj.optString("token")
+        val peerId = obj.optString("id")
+        val key = PairStore.claimQRToken(token, peerId)
+            ?: return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "invalid or expired token")
+        return json("""{"key":"${PairStore.bytesToHex(key)}"}"""
+        )
     }
 
     private fun handlePairClaim(session: IHTTPSession): Response {
