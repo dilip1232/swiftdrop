@@ -161,9 +161,21 @@ func runHeadless(port int) {
 	core.InitPairStore()
 
 	srv := core.NewServer(id, reg, trk)
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", id.Port))
+	var ln net.Listener
+	var err error
+	for offset := 0; offset < 10; offset++ {
+		p := id.Port + offset
+		ln, err = net.Listen("tcp", fmt.Sprintf(":%d", p))
+		if err == nil {
+			if offset > 0 {
+				log.Printf("port %d busy; using %d instead", id.Port, p)
+				id.Port = p
+			}
+			break
+		}
+	}
 	if err != nil {
-		log.Fatalf("listen: %v", err)
+		log.Fatalf("listen :%d (tried 10 ports): %v", id.Port, err)
 	}
 	core.StartNetworkWatcher(context.Background(), id, reg)
 	core.StartKeepalive(context.Background(), reg, id)
