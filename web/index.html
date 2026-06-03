@@ -494,12 +494,12 @@ async function removePeer(id) {
 
 // ── Pairing ──
 async function refreshPairedStatus() {
-  for (const d of state.devices) {
+  await Promise.all(state.devices.map(async d => {
     try {
       const r = await (await apiFetch("/api/pair/status?id=" + encodeURIComponent(d.id))).json();
       if (r.paired) state.pairedIds.add(d.id); else state.pairedIds.delete(d.id);
     } catch {}
-  }
+  }));
   renderDevices();
 }
 
@@ -637,7 +637,20 @@ pollTransfers();
 setTimeout(refreshPairedStatus, 2000);
 setInterval(loadMe, 4000);        // refresh own IP on network change
 setInterval(pollDevices, 2000);
-setInterval(pollTransfers, 700);
+// Adaptive polling: fast (700ms) during active transfers, slow (3s) when idle.
+let transferPollTimer = setInterval(pollTransfers, 3000);
+function scheduleTransferPoll() {
+  const hasActive = state.transfers.some(t => t.status === "sending");
+  const interval = hasActive ? 700 : 3000;
+  if (transferPollTimer._interval !== interval) {
+    clearInterval(transferPollTimer);
+    transferPollTimer = setInterval(pollTransfers, interval);
+    transferPollTimer._interval = interval;
+  }
+}
+// Hook into pollTransfers to adjust interval after each poll.
+const _origPollTransfers = pollTransfers;
+pollTransfers = async function() { await _origPollTransfers(); scheduleTransferPoll(); };
 setInterval(refreshPairedStatus, 10000);
 </script>
 </body>
