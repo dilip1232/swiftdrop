@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"crypto/hmac"
+	hmacsha "crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -143,6 +146,14 @@ func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename 
 	}
 	if len(sha256hash) > 0 && sha256hash[0] != "" {
 		req.Header.Set("X-SHA256", sha256hash[0])
+	}
+	// HMAC sender authentication: sign fromID|filename|timestamp with shared key.
+	if key := Pairs.IsPaired(peer.ID); key != nil {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(hmacsha.New, key)
+		mac.Write([]byte(self.ID + "|" + filename + "|" + ts))
+		req.Header.Set("X-Auth-HMAC", hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Auth-Time", ts)
 	}
 
 	resp, err := TransferClient.Do(req)

@@ -14,7 +14,7 @@ type Transfer struct {
 	Name   string `json:"name"`
 	Size   int64  `json:"size"`
 	Sent   int64  `json:"sent"`
-	Status string `json:"status"` // "sending" | "done" | "error" | "canceled"
+	Status string `json:"status"` // "pending" | "sending" | "done" | "error" | "canceled"
 	Peer   string `json:"peer"`
 	Dir    string `json:"dir"` // "send" | "recv"
 	Err    string `json:"err,omitempty"`
@@ -24,6 +24,9 @@ type Transfer struct {
 	// For retry: stored only for outbound sends
 	FilePath string `json:"-"`
 	PeerID   string `json:"-"`
+
+	// Receiver consent: created for inbound pending transfers.
+	Decision chan bool `json:"-"`
 
 	// Computed for JSON output
 	Retryable bool `json:"retryable,omitempty"`
@@ -52,6 +55,53 @@ func (t *Tracker) Start(name string, size int64, peer, dir string) *Transfer {
 	t.order = append(t.order, id)
 	t.trimLocked()
 	return tr
+}
+
+// StartPending creates a transfer in "pending" state with a decision channel.
+// The caller must wait on Decision for the user's accept/reject response.
+func (t *Tracker) StartPending(name string, size int64, peer string) *Transfer {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.seq++
+	id := time.Now().Format("150405") + "-" + Itoa(t.seq)
+	tr := &Transfer{
+		ID: id, Name: name, Size: size, Status: "pending",
+		Peer: peer, Dir: "recv", Decision: make(chan bool, 1),
+	}
+	t.items[id] = tr
+	t.order = append(t.order, id)
+	t.trimLocked()
+	return tr
+}
+
+// AcceptTransfer resolves a pending transfer as accepted.
+func (t *Tracker) AcceptTransfer(id string) bool {
+	t.mu.RLock()
+	tr := t.items[id]
+	t.mu.RUnlock()
+	if tr != nil && tr.Status == "pending" && tr.Decision != nil {
+		select {
+		case tr.Decision <- true:
+			return true
+		default:
+		}
+	}
+	return false
+}
+
+// RejectTransfer resolves a pending transfer as rejected.
+func (t *Tracker) RejectTransfer(id string) bool {
+	t.mu.RLock()
+	tr := t.items[id]
+	t.mu.RUnlock()
+	if tr != nil && tr.Status == "pending" && tr.Decision != nil {
+		select {
+		case tr.Decision <- false:
+			return true
+		default:
+		}
+	}
+	return false
 }
 
 func (t *Tracker) SetCancel(tr *Transfer, c context.CancelFunc) {

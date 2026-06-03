@@ -170,14 +170,25 @@ func (ps *PairStore) Save() {
 		m[id] = hex.EncodeToString(k)
 	}
 	data, _ := json.Marshal(m)
+	// Encrypt at rest (macOS: AES-256-GCM with Keychain master key; others: no-op).
+	enc, err := platformEncrypt(data)
+	if err != nil {
+		log.Printf("pairing: encrypt-at-rest failed, saving plaintext: %v", err)
+		enc = data
+	}
 	os.MkdirAll(filepath.Dir(ps.path()), 0o755)
-	os.WriteFile(ps.path(), data, 0o600)
+	os.WriteFile(ps.path(), enc, 0o600)
 }
 
 func (ps *PairStore) Load() {
-	data, err := os.ReadFile(ps.path())
+	raw, err := os.ReadFile(ps.path())
 	if err != nil {
 		return
+	}
+	// Decrypt at rest; if it fails, try as plain JSON (migration from old format).
+	data, err := platformDecrypt(raw)
+	if err != nil {
+		data = raw
 	}
 	var m map[string]string
 	if json.Unmarshal(data, &m) != nil {
