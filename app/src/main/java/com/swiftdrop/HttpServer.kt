@@ -38,6 +38,8 @@ class HttpServer : NanoHTTPD(State.PORT) {
             uri == "/api/transfers" -> withToken(session) { json(transfersJson()) }
             uri == "/api/transfers/clear" -> withToken(session) { clearFinished(); json("""{"ok":true}""") }
             uri == "/api/transfers/cancel" -> withToken(session) { cancelTransfer(session); json("""{"ok":true}""") }
+            uri == "/api/transfers/pause" -> withToken(session) { pauseTransfer(session) }
+            uri == "/api/transfers/resume" -> withToken(session) { resumeTransfer(session) }
             uri == "/api/transfers/retry" && session.method == Method.POST -> withToken(session) { retryTransfer(session) }
             uri == "/api/transfers/accept" -> withToken(session) { handleAcceptReject(session, true) }
             uri == "/api/transfers/reject" -> withToken(session) { handleAcceptReject(session, false) }
@@ -319,12 +321,13 @@ class HttpServer : NanoHTTPD(State.PORT) {
     }
 
     private fun clearFinished() {
-        State.transfers.removeAll { it.status != "sending" && it.status != "pending" }
+        State.transfers.removeAll { it.status != "sending" && it.status != "pending" && it.status != "paused" }
     }
 
     private fun cancelTransfer(session: IHTTPSession) {
         val id = session.parameters["id"]?.firstOrNull() ?: return
-        State.transfers.firstOrNull { it.id == id && it.status == "sending" }?.let {
+        State.transfers.firstOrNull { it.id == id && (it.status == "sending" || it.status == "paused") }?.let {
+            if (it.paused) it.resume() // unblock the streaming thread first
             it.canceled = true
             it.status = "canceled"
             // Force-disconnect the HTTP connection to abort the transfer immediately
@@ -349,6 +352,22 @@ class HttpServer : NanoHTTPD(State.PORT) {
         return json("""{"ok":true}""")
     }
 
+    private fun pauseTransfer(session: IHTTPSession): Response {
+        val id = session.parms["id"] ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "missing id")
+        val t = State.transfers.firstOrNull { it.id == id && it.status == "sending" }
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "not found or not sending")
+        t.pause()
+        return json("""{"ok":true}""")
+    }
+
+    private fun resumeTransfer(session: IHTTPSession): Response {
+        val id = session.parms["id"] ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "missing id")
+        val t = State.transfers.firstOrNull { it.id == id && it.status == "paused" }
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "not found or not paused")
+        t.resume()
+        return json("""{"ok":true}""")
+    }
+
     private fun transfersJson(): String {
         val arr = JSONArray()
         for (t in State.transfers) {
@@ -356,6 +375,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
                 put("id", t.id); put("name", t.name); put("size", t.size)
                 put("sent", t.sent.get()); put("status", t.status); put("peer", t.peer); put("dir", t.dir)
                 t.err?.let { put("err", it) }
+                if (t.paused) put("paused", true)
                 if (t.dir == "send" && (t.status == "error" || t.status == "canceled") && t.uri != null) put("retryable", true)
             })
         }
@@ -508,130 +528,105 @@ class HttpServer : NanoHTTPD(State.PORT) {
 
     @Suppress("DEPRECATION")
     private fun showConsentDialog(activity: android.app.Activity, tr: Transfer, from: String, fileName: String, size: String) {
-        val dp = activity.resources.displayMetrics.density
-        fun dp(v: Int) = (v * dp).toInt()
+        val density = activity.resources.displayMetrics.density
+        fun dp(v: Int) = (v * density).toInt()
 
-        val card = android.widget.LinearLayout(activity).apply {
+        val root = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(dp(24), dp(24), dp(24), dp(20))
-            setBackgroundColor(0xFF1C1C1E.toInt())
+            setPadding(dp(20), dp(18), dp(20), dp(16))
         }
 
-        // Icon
-        val icon = android.widget.ImageView(activity).apply {
-            setImageResource(android.R.drawable.stat_sys_download)
-            setColorFilter(0xFF3B82F6.toInt())
-            layoutParams = android.widget.LinearLayout.LayoutParams(dp(40), dp(40)).apply {
-                gravity = android.view.Gravity.CENTER_HORIZONTAL
-                bottomMargin = dp(16)
-            }
+        // Header row: icon + title/sender
+        val header = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) }
         }
-        card.addView(icon)
-
-        // Title
-        val title = android.widget.TextView(activity).apply {
-            text = "Incoming File"
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 20f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            gravity = android.view.Gravity.CENTER
-            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(4) }
-        }
-        card.addView(title)
-
-        // Subtitle (sender)
-        val sub = android.widget.TextView(activity).apply {
-            text = "from $from"
-            setTextColor(0xFF9CA3AF.toInt())
-            textSize = 14f
-            gravity = android.view.Gravity.CENTER
-            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) }
-        }
-        card.addView(sub)
-
-        // File info card
-        val infoCard = android.widget.LinearLayout(activity).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+        val iconBg = android.widget.FrameLayout(activity).apply {
             val bg = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF2A2A2E.toInt())
-                cornerRadius = dp(12).toFloat()
+                setColor(0xFF1E3A5F.toInt()); cornerRadius = dp(10).toFloat()
             }
             background = bg
-            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(20) }
+            layoutParams = android.widget.LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginEnd = dp(12) }
         }
-        val fnText = android.widget.TextView(activity).apply {
-            text = fileName
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 15f
+        val icon = android.widget.ImageView(activity).apply {
+            setImageResource(android.R.drawable.stat_sys_download)
+            setColorFilter(0xFF60A5FA.toInt())
+            layoutParams = android.widget.FrameLayout.LayoutParams(dp(20), dp(20), android.view.Gravity.CENTER)
+        }
+        iconBg.addView(icon)
+        header.addView(iconBg)
+        val titleCol = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
+        }
+        titleCol.addView(android.widget.TextView(activity).apply {
+            text = "Incoming file"; setTextColor(0xFFFFFFFF.toInt()); textSize = 15f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-        }
-        infoCard.addView(fnText)
-        val szText = android.widget.TextView(activity).apply {
-            text = size
-            setTextColor(0xFF9CA3AF.toInt())
-            textSize = 13f
-            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) }
-        }
-        infoCard.addView(szText)
-        card.addView(infoCard)
+        })
+        titleCol.addView(android.widget.TextView(activity).apply {
+            text = "from $from"; setTextColor(0xFF8B8B8E.toInt()); textSize = 12f
+        })
+        header.addView(titleCol)
+        root.addView(header)
 
-        // Button row
+        // File info pill
+        val pill = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            val bg = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF2C2C2E.toInt()); cornerRadius = dp(10).toFloat()
+            }
+            background = bg
+            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) }
+        }
+        pill.addView(android.widget.TextView(activity).apply {
+            text = fileName; setTextColor(0xFFE5E5E5.toInt()); textSize = 13f
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
+        })
+        pill.addView(android.widget.TextView(activity).apply {
+            text = size; setTextColor(0xFF8B8B8E.toInt()); textSize = 12f
+            layoutParams = android.widget.LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(10) }
+        })
+        root.addView(pill)
+
+        // Buttons
         val row = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.HORIZONTAL
             layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2)
         }
-
         val dlg = android.app.Dialog(activity).apply {
-            requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
-            setCancelable(false)
+            requestWindowFeature(android.view.Window.FEATURE_NO_TITLE); setCancelable(false)
         }
-
-        val btnParams = android.widget.LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6); marginStart = dp(6) }
-
-        val rejectBtn = android.widget.TextView(activity).apply {
-            text = "Reject"
-            setTextColor(0xFFFF453A.toInt())
-            textSize = 15f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            gravity = android.view.Gravity.CENTER
-            layoutParams = btnParams
-            val bg = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF3A2A2A.toInt())
-                cornerRadius = dp(12).toFloat()
+        row.addView(android.widget.TextView(activity).apply {
+            text = "Reject"; setTextColor(0xFFFF6961.toInt()); textSize = 14f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD; gravity = android.view.Gravity.CENTER
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(5) }
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF3A2A2A.toInt()); cornerRadius = dp(10).toFloat()
             }
-            background = bg
             setOnClickListener { tr.accepted = false; tr.decision.countDown(); dlg.dismiss() }
-        }
-        row.addView(rejectBtn)
-
-        val acceptBtn = android.widget.TextView(activity).apply {
-            text = "Accept"
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 15f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            gravity = android.view.Gravity.CENTER
-            layoutParams = android.widget.LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6) }
-            val bg = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF3B82F6.toInt())
-                cornerRadius = dp(12).toFloat()
+        })
+        row.addView(android.widget.TextView(activity).apply {
+            text = "Accept"; setTextColor(0xFFFFFFFF.toInt()); textSize = 14f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD; gravity = android.view.Gravity.CENTER
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(5) }
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF3478F6.toInt()); cornerRadius = dp(10).toFloat()
             }
-            background = bg
             setOnClickListener { tr.accepted = true; tr.decision.countDown(); dlg.dismiss() }
-        }
-        row.addView(acceptBtn)
-        card.addView(row)
+        })
+        root.addView(row)
 
-        dlg.setContentView(card)
+        dlg.setContentView(root)
         dlg.window?.apply {
             setBackgroundDrawable(android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF1C1C1E.toInt())
-                cornerRadius = dp(20).toFloat()
+                setColor(0xFF1C1C1E.toInt()); cornerRadius = dp(16).toFloat()
             })
-            setLayout((activity.resources.displayMetrics.widthPixels * 0.85).toInt(), android.view.WindowManager.LayoutParams.WRAP_CONTENT)
-            setDimAmount(0.6f)
+            setLayout((activity.resources.displayMetrics.widthPixels * 0.82).toInt(), android.view.WindowManager.LayoutParams.WRAP_CONTENT)
+            setDimAmount(0.5f)
         }
         dlg.show()
     }

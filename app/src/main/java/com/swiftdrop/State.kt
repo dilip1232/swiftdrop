@@ -31,6 +31,14 @@ class Transfer(val id: String, val name: String, val size: Long, val peer: Strin
     // Receiver consent: latch blocks handleInbox until user responds.
     val decision = CountDownLatch(1)
     @Volatile var accepted: Boolean = false
+    // Pause support: CountingStream blocks reads while paused.
+    private val pauseLock = java.util.concurrent.locks.ReentrantLock()
+    private val resumeCond = pauseLock.newCondition()
+    @Volatile var paused: Boolean = false
+
+    fun pause() { pauseLock.lock(); try { paused = true; status = "paused" } finally { pauseLock.unlock() } }
+    fun resume() { pauseLock.lock(); try { paused = false; status = "sending"; resumeCond.signalAll() } finally { pauseLock.unlock() } }
+    fun awaitIfPaused() { pauseLock.lock(); try { while (paused) resumeCond.await() } finally { pauseLock.unlock() } }
 }
 
 /**

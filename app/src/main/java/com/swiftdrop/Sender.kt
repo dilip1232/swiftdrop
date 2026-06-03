@@ -136,12 +136,14 @@ object Sender {
         private val transfer: Transfer
     ) : InputStream() {
         override fun read(): Int {
+            transfer.awaitIfPaused()
             if (transfer.canceled) throw java.io.IOException("canceled")
             val b = inner.read()
             if (b >= 0) transfer.sent.incrementAndGet()
             return b
         }
         override fun read(buf: ByteArray, off: Int, len: Int): Int {
+            transfer.awaitIfPaused()
             if (transfer.canceled) throw java.io.IOException("canceled")
             val n = inner.read(buf, off, len)
             if (n > 0) transfer.sent.addAndGet(n.toLong())
