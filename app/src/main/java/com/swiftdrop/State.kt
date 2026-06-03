@@ -5,6 +5,7 @@ import android.os.Build
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicLong
 
 /** A SwiftDrop device discovered on the network. */
@@ -19,13 +20,16 @@ data class Peer(
 /** Live state of one outbound file; [sent] is updated as bytes stream out. */
 class Transfer(val id: String, val name: String, val size: Long, val peer: String, val dir: String) {
     val sent = AtomicLong(0)
-    @Volatile var status: String = "sending" // "sending" | "done" | "error" | "canceled"
+    @Volatile var status: String = "sending" // "pending" | "sending" | "done" | "error" | "canceled"
     @Volatile var err: String? = null
     @Volatile var canceled: Boolean = false  // set by /api/transfers/cancel
     @Volatile var conn: java.net.HttpURLConnection? = null  // for forced disconnect on cancel
     // For retry: stored only for outbound sends
     @Volatile var uri: String? = null
     @Volatile var peerId: String? = null
+    // Receiver consent: latch blocks handleInbox until user responds.
+    val decision = CountDownLatch(1)
+    @Volatile var accepted: Boolean = false
 }
 
 /**
@@ -47,6 +51,13 @@ object State {
     val ignore = ConcurrentHashMap<String, Long>()       // id -> suppress-until (ms)
     val transfers = CopyOnWriteArrayList<Transfer>()
     private var seq = 0L
+
+    fun newPendingTransfer(name: String, size: Long, peer: String): Transfer {
+        val t = Transfer("${System.currentTimeMillis()}-${++seq}", name, size, peer, "recv")
+        t.status = "pending"
+        transfers.add(t)
+        return t
+    }
 
     /** Record a device (keyed by id) so the prober keeps it visible / re-finds it. */
     fun remember(p: Peer) {

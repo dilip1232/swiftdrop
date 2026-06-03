@@ -39,6 +39,8 @@ class HttpServer : NanoHTTPD(State.PORT) {
             uri == "/api/transfers/clear" -> withToken(session) { clearFinished(); json("""{"ok":true}""") }
             uri == "/api/transfers/cancel" -> withToken(session) { cancelTransfer(session); json("""{"ok":true}""") }
             uri == "/api/transfers/retry" && session.method == Method.POST -> withToken(session) { retryTransfer(session) }
+            uri == "/api/transfers/accept" -> withToken(session) { handleAcceptReject(session, true) }
+            uri == "/api/transfers/reject" -> withToken(session) { handleAcceptReject(session, false) }
             uri == "/api/send-path" && session.method == Method.POST -> withToken(session) { handleSend(session) }
             uri == "/api/peers/add" && session.method == Method.POST -> handleAddPeer(session) // public — peers announce themselves
             uri == "/api/peers/remove" && session.method == Method.POST -> withToken(session) { handleRemovePeer(session) }
@@ -99,8 +101,26 @@ class HttpServer : NanoHTTPD(State.PORT) {
         val len = session.headers["content-length"]?.toLongOrNull() ?: -1L
 
         // Reject files from unpaired senders.
-        if (fromID.isEmpty() || PairStore.isPaired(fromID) == null) {
+        val pairKey = PairStore.isPaired(fromID)
+        if (fromID.isEmpty() || pairKey == null) {
             return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "not paired — pair first")
+        }
+
+        // Verify HMAC sender authentication to prevent X-From-ID spoofing.
+        val authHMAC = session.headers["x-auth-hmac"]
+        if (!authHMAC.isNullOrEmpty()) {
+            val authTime = session.headers["x-auth-time"] ?: ""
+            val ts = authTime.toLongOrNull() ?: 0L
+            val delta = kotlin.math.abs(System.currentTimeMillis() / 1000 - ts)
+            if (delta > 300) {
+                return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "auth timestamp expired")
+            }
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(javax.crypto.spec.SecretKeySpec(pairKey, "HmacSHA256"))
+            val expected = mac.doFinal("$fromID|$name|$authTime".toByteArray()).joinToString("") { "%02x".format(it) }
+            if (authHMAC != expected) {
+                return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "authentication failed")
+            }
         }
 
         // Check free disk space using original file size.
@@ -118,8 +138,21 @@ class HttpServer : NanoHTTPD(State.PORT) {
         // the original file size from X-File-Size for progress tracking.
         val trackSize = if (len > 0) len else (session.headers["x-file-size"]?.toLongOrNull() ?: 0L)
 
+        // ── Receiver consent: block until the user accepts or 60s timeout ──
+        val tr = State.newPendingTransfer(name, trackSize, from)
+        val sizeStr = humanSize(trackSize)
+        Notifier.showConsentNotification(State.appContext, tr.id, from, name, sizeStr)
+        val responded = tr.decision.await(60, java.util.concurrent.TimeUnit.SECONDS)
+        if (!responded || !tr.accepted) {
+            tr.status = "error"; tr.err = if (responded) "rejected by user" else "no response — auto-rejected"
+            return newFixedLengthResponse(
+                if (responded) Response.Status.FORBIDDEN else Response.Status(408, "Request Timeout"),
+                MIME_PLAINTEXT, tr.err
+            )
+        }
+        tr.status = "sending"
+
         val cr = State.appContext.contentResolver
-        val tr = State.newTransfer(name, trackSize, from, "recv")
         Notifier.refreshServiceNotification()
         PowerLocks.begin()
 
@@ -280,7 +313,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
     }
 
     private fun clearFinished() {
-        State.transfers.removeAll { it.status != "sending" }
+        State.transfers.removeAll { it.status != "sending" && it.status != "pending" }
     }
 
     private fun cancelTransfer(session: IHTTPSession) {
@@ -350,6 +383,24 @@ class HttpServer : NanoHTTPD(State.PORT) {
         uri.endsWith(".js") -> "application/javascript"
         uri.endsWith(".svg") -> "image/svg+xml"
         else -> "application/octet-stream"
+    }
+
+    private fun handleAcceptReject(session: IHTTPSession, accept: Boolean): Response {
+        val id = session.parameters["id"]?.firstOrNull() ?: ""
+        val tr = State.transfers.firstOrNull { it.id == id && it.status == "pending" }
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "not found or not pending")
+        tr.accepted = accept
+        tr.decision.countDown()
+        return json("""{"ok":true}""")
+    }
+
+    private fun humanSize(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val units = arrayOf("KB", "MB", "GB")
+        var value = bytes / 1024.0
+        var u = 0
+        while (value >= 1024 && u < units.size - 1) { value /= 1024; u++ }
+        return "%.1f %s".format(value, units[u])
     }
 
     private fun safeName(raw: String): String {

@@ -155,6 +155,38 @@ object Notifier {
         ctx.getSystemService(NotificationManager::class.java).notify(alertId++, n)
     }
 
+    /** Show a consent notification with Accept / Reject action buttons. */
+    fun showConsentNotification(ctx: Context, transferId: String, from: String, fileName: String, size: String): Int {
+        val notifId = alertId++
+        val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+
+        val acceptIntent = android.content.Intent(ctx, TransferConsentReceiver::class.java).apply {
+            action = TransferConsentReceiver.ACTION_ACCEPT
+            putExtra(TransferConsentReceiver.EXTRA_TRANSFER_ID, transferId)
+            putExtra(TransferConsentReceiver.EXTRA_NOTIF_ID, notifId)
+        }
+        val acceptPI = android.app.PendingIntent.getBroadcast(ctx, notifId * 2, acceptIntent, flags)
+
+        val rejectIntent = android.content.Intent(ctx, TransferConsentReceiver::class.java).apply {
+            action = TransferConsentReceiver.ACTION_REJECT
+            putExtra(TransferConsentReceiver.EXTRA_TRANSFER_ID, transferId)
+            putExtra(TransferConsentReceiver.EXTRA_NOTIF_ID, notifId)
+        }
+        val rejectPI = android.app.PendingIntent.getBroadcast(ctx, notifId * 2 + 1, rejectIntent, flags)
+
+        val n = Notification.Builder(ctx, ALERT_CHANNEL)
+            .setContentTitle("Incoming file from $from")
+            .setContentText("$fileName ($size)")
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .addAction(Notification.Action.Builder(null, "Accept", acceptPI).build())
+            .addAction(Notification.Action.Builder(null, "Reject", rejectPI).build())
+            .build()
+        ctx.getSystemService(NotificationManager::class.java).notify(notifId, n)
+        return notifId
+    }
+
     private fun humanSize(bytes: Long): String {
         if (bytes < 1024) return "$bytes B"
         val units = arrayOf("KB", "MB", "GB")

@@ -75,6 +75,15 @@ object Sender {
                 setRequestProperty("X-From-ID", State.deviceId)
                 if (size > 0) setRequestProperty("X-File-Size", size.toString())
                 if (encrypted) setRequestProperty("X-Encrypted", "aes-gcm")
+                // HMAC sender authentication.
+                if (key != null) {
+                    val ts = (System.currentTimeMillis() / 1000).toString()
+                    val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+                    mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+                    val sig = mac.doFinal("${State.deviceId}|$name|$ts".toByteArray())
+                    setRequestProperty("X-Auth-HMAC", sig.joinToString("") { "%02x".format(it) })
+                    setRequestProperty("X-Auth-Time", ts)
+                }
                 connectTimeout = 8000
                 readTimeout = 0 // no timeout for large encrypted writes
                 if (wireSize >= 0) setFixedLengthStreamingMode(wireSize) else setChunkedStreamingMode(BUF)

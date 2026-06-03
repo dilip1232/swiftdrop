@@ -109,10 +109,12 @@ object Crypto {
 }
 
 /**
- * Manages shared AES-256 keys for paired devices, persisted in SharedPreferences.
+ * Manages shared AES-256 keys for paired devices, persisted in EncryptedSharedPreferences
+ * (backed by Android Keystore).
  */
 object PairStore {
-    private const val PREFS = "swiftdrop_pairs"
+    private const val PREFS = "swiftdrop_pairs_enc"
+    private const val LEGACY_PREFS = "swiftdrop_pairs"
     private val keys = mutableMapOf<String, ByteArray>()
 
     // Pending PIN pairing offer
@@ -129,8 +131,29 @@ object PairStore {
     @Volatile private var qrKey: ByteArray? = null
     @Volatile private var qrExpiry: Long = 0
 
+    private fun encryptedPrefs(ctx: Context): android.content.SharedPreferences {
+        return androidx.security.crypto.EncryptedSharedPreferences.create(
+            PREFS,
+            androidx.security.crypto.MasterKeys.getOrCreate(androidx.security.crypto.MasterKeys.AES256_GCM_SPEC),
+            ctx,
+            androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+
     fun init(ctx: Context) {
-        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // Migrate from legacy plain SharedPreferences if present.
+        val legacy = ctx.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
+        val legacyAll = legacy.all
+        if (legacyAll.isNotEmpty()) {
+            for ((k, v) in legacyAll) {
+                if (v is String) runCatching { keys[k] = hexToBytes(v) }
+            }
+            legacy.edit().clear().apply()
+            save() // re-save into encrypted prefs
+            return
+        }
+        val prefs = encryptedPrefs(ctx)
         for ((k, v) in prefs.all) {
             if (v is String) {
                 try {
@@ -214,7 +237,7 @@ object PairStore {
     }
 
     private fun save() {
-        val prefs = State.appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        val prefs = encryptedPrefs(State.appContext).edit()
         prefs.clear()
         for ((id, k) in keys) prefs.putString(id, bytesToHex(k))
         prefs.apply()
