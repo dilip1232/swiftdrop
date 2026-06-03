@@ -1,122 +1,188 @@
 package core
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 )
 
-// TextBuffer holds the most recently received text snippet so the UI can poll
-// it. Only the latest text is kept — this is a clipboard-style feature, not
-// a chat history.
-type TextBuffer struct {
-	mu   sync.RWMutex
+const maxMsgsPerPeer = 100
+
+// ChatMsg is a single chat message between this device and a peer.
+type ChatMsg struct {
+	ID   string `json:"id"`
 	Text string `json:"text"`
-	From string `json:"from"`
-	Ts   int64  `json:"ts"` // unix-ms; 0 = empty
+	From string `json:"from"` // sender device name
+	Dir  string `json:"dir"`  // "sent" | "recv"
+	Ts   int64  `json:"ts"`   // unix milliseconds
 }
 
-func (b *TextBuffer) Set(text, from string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.Text = text
-	b.From = from
-	b.Ts = time.Now().UnixMilli()
+// ChatStore keeps per-peer message history in memory (last 100 per peer).
+type ChatStore struct {
+	mu         sync.RWMutex
+	msgs       map[string][]ChatMsg // peerID → messages
+	notifyPeer string               // last peer who messaged us
+	notifyName string
 }
 
-// Get returns the current buffer if newer than `since` (unix-ms).
-func (b *TextBuffer) Get(since int64) (text, from string, ts int64) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if b.Ts > since {
-		return b.Text, b.From, b.Ts
+func NewChatStore() *ChatStore {
+	return &ChatStore{msgs: make(map[string][]ChatMsg)}
+}
+
+func (cs *ChatStore) Add(peerID string, msg ChatMsg) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.msgs[peerID] = append(cs.msgs[peerID], msg)
+	if n := len(cs.msgs[peerID]); n > maxMsgsPerPeer {
+		cs.msgs[peerID] = cs.msgs[peerID][n-maxMsgsPerPeer:]
 	}
-	return "", "", 0
 }
 
-// handleTextInbox is the public endpoint a peer POSTs to when sharing text.
-// Body: {"from":"DeviceName","text":"..."}
-func (s *Server) handleTextInbox(w http.ResponseWriter, r *http.Request) {
+// Since returns messages for peerID with Ts > since.
+func (cs *ChatStore) Since(peerID string, since int64) []ChatMsg {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	var out []ChatMsg
+	for _, m := range cs.msgs[peerID] {
+		if m.Ts > since {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (cs *ChatStore) SetNotify(peerID, peerName string) {
+	cs.mu.Lock()
+	cs.notifyPeer = peerID
+	cs.notifyName = peerName
+	cs.mu.Unlock()
+}
+
+func (cs *ChatStore) GetNotify() (string, string) {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	return cs.notifyPeer, cs.notifyName
+}
+
+func (cs *ChatStore) ClearNotify() {
+	cs.mu.Lock()
+	cs.notifyPeer = ""
+	cs.notifyName = ""
+	cs.mu.Unlock()
+}
+
+func chatMsgID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// ── HTTP handlers ──────────────────────────────────────────────────────────
+
+// handleChatInbox receives a message from a remote peer (public, no token).
+// Body: {"from":"DeviceName","fromId":"device-id","text":"hello"}
+func (s *Server) handleChatInbox(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
-		From string `json:"from"`
-		Text string `json:"text"`
+		From   string `json:"from"`
+		FromID string `json:"fromId"`
+		Text   string `json:"text"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil || body.Text == "" {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil || body.Text == "" || body.FromID == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	if body.From == "" {
 		body.From = "Unknown"
 	}
-	s.RecvText.Set(body.Text, body.From)
-	// Show a notification on the receiver.
+	msg := ChatMsg{ID: chatMsgID(), Text: body.Text, From: body.From, Dir: "recv", Ts: time.Now().UnixMilli()}
+	s.Chat.Add(body.FromID, msg)
+	s.Chat.SetNotify(body.FromID, body.From)
+
 	snippet := body.Text
 	if len(snippet) > 80 {
 		snippet = snippet[:80] + "…"
 	}
-	go Notify("Text from "+body.From, snippet)
+	go Notify("Message from "+body.From, snippet)
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleSendText is the protected endpoint the local UI calls to share text
-// with all paired peers. Body: {"text":"..."}
-func (s *Server) handleSendText(w http.ResponseWriter, r *http.Request) {
+// handleChatSend sends a message to a specific peer (protected).
+// Body: {"peer":"device-id","text":"hello"}
+func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
+		Peer string `json:"peer"`
 		Text string `json:"text"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil || body.Text == "" {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil || body.Peer == "" || body.Text == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	// Broadcast to every paired & reachable peer.
-	sent := 0
-	for _, id := range Pairs.PairedIDs() {
-		if peer, ok := s.Reg.Get(id); ok {
-			go s.deliverText(peer, body.Text)
-			sent++
-		}
+	peer, ok := s.Reg.Get(body.Peer)
+	if !ok {
+		http.Error(w, "peer not found", http.StatusNotFound)
+		return
 	}
-	WriteJSON(w, map[string]interface{}{"ok": true, "sent": sent})
+	msg := ChatMsg{ID: chatMsgID(), Text: body.Text, From: s.ID.Name, Dir: "sent", Ts: time.Now().UnixMilli()}
+	s.Chat.Add(body.Peer, msg)
+	go s.deliverChat(peer, body.Text)
+	WriteJSON(w, map[string]interface{}{"ok": true, "id": msg.ID})
 }
 
-// deliverText POSTs the text to the peer's /text-inbox.
-func (s *Server) deliverText(peer Peer, text string) {
-	payload := fmt.Sprintf(`{"from":%q,"text":%q}`, s.ID.Name, text)
-	req, err := http.NewRequest(http.MethodPost, "http://"+peer.Host+"/text-inbox", strings.NewReader(payload))
+// handleChatMessages returns messages for a peer since a timestamp (protected).
+// GET /api/chat/messages?peer=<id>&since=<ts>
+func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
+	peerID := r.URL.Query().Get("peer")
+	since := int64(0)
+	if v := r.URL.Query().Get("since"); v != "" {
+		fmt.Sscanf(v, "%d", &since)
+	}
+	msgs := s.Chat.Since(peerID, since)
+	if msgs == nil {
+		msgs = []ChatMsg{}
+	}
+	WriteJSON(w, msgs)
+}
+
+// handleChatNotify returns the last peer who sent us a message (for notification click).
+func (s *Server) handleChatNotify(w http.ResponseWriter, r *http.Request) {
+	id, name := s.Chat.GetNotify()
+	WriteJSON(w, map[string]string{"peer": id, "name": name})
+}
+
+// handleChatNotifyAck clears the pending notification.
+func (s *Server) handleChatNotifyAck(w http.ResponseWriter, _ *http.Request) {
+	s.Chat.ClearNotify()
+	w.WriteHeader(http.StatusOK)
+}
+
+// deliverChat POSTs a chat message to the peer's /chat-inbox.
+func (s *Server) deliverChat(peer Peer, text string) {
+	payload := fmt.Sprintf(`{"from":%q,"fromId":%q,"text":%q}`, s.ID.Name, s.ID.ID, text)
+	req, err := http.NewRequest(http.MethodPost, "http://"+peer.Host+"/chat-inbox", strings.NewReader(payload))
 	if err != nil {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
-	if err == nil {
-		resp.Body.Close()
-	}
-}
-
-// handleReceivedText returns the most recently received text if newer than
-// the `since` query parameter (unix-ms timestamp).
-func (s *Server) handleReceivedText(w http.ResponseWriter, r *http.Request) {
-	since := int64(0)
-	if v := r.URL.Query().Get("since"); v != "" {
-		fmt.Sscanf(v, "%d", &since)
-	}
-	text, from, ts := s.RecvText.Get(since)
-	if ts == 0 {
-		WriteJSON(w, map[string]interface{}{"ts": 0})
+	if err != nil {
+		log.Printf("chat delivery to %s failed: %v", peer.Name, err)
 		return
 	}
-	WriteJSON(w, map[string]interface{}{"text": text, "from": from, "ts": ts})
+	resp.Body.Close()
 }
