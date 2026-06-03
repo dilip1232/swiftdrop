@@ -77,6 +77,13 @@ func browse(ctx context.Context, self Identity, reg *PeerRegistry) {
 		// an mDNS sweep missed it. As a safety net, drop peers neither seen by
 		// mDNS nor refreshed by keepalive for a long window.
 		reg.PruneStale(60 * time.Second)
+
+		// Pause between browse cycles to reduce mDNS multicast traffic.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
 	}
 }
 

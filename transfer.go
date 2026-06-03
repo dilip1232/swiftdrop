@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"crypto/hmac"
+	hmacsha "crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +27,13 @@ type CountingReader struct {
 }
 
 func (c *CountingReader) Read(p []byte) (int, error) {
+	// Block while the transfer is paused.
+	c.Tr.PauseMu.Lock()
+	ch := c.Tr.PauseCh
+	c.Tr.PauseMu.Unlock()
+	if ch != nil {
+		<-ch // blocks until channel is closed (resume)
+	}
 	n, err := c.R.Read(p)
 	if n > 0 {
 		atomic.AddInt64(&c.Tr.Sent, int64(n))
@@ -144,6 +154,14 @@ func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename 
 	if len(sha256hash) > 0 && sha256hash[0] != "" {
 		req.Header.Set("X-SHA256", sha256hash[0])
 	}
+	// HMAC sender authentication: sign fromID|filename|timestamp with shared key.
+	if key := Pairs.IsPaired(peer.ID); key != nil {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(hmacsha.New, key)
+		mac.Write([]byte(self.ID + "|" + filename + "|" + ts))
+		req.Header.Set("X-Auth-HMAC", hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Auth-Time", ts)
+	}
 
 	resp, err := TransferClient.Do(req)
 	if err != nil {
@@ -210,6 +228,17 @@ func ProbePeer(host string) (Peer, error) {
 
 // AnnounceToRemote tells a remote peer about us so they add us to their device
 // list. This makes discovery bidirectional even when mDNS is one-way.
+// announceClient is a shared HTTP client for lightweight announce/probe calls.
+var announceClient = &http.Client{
+	Timeout: 3 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        16,
+		IdleConnTimeout:     30 * time.Second,
+		DisableCompression:  true,
+		TLSHandshakeTimeout: 3 * time.Second,
+	},
+}
+
 func AnnounceToRemote(peerHost string, self Identity) {
 	selfIP := LocalIP()
 	if selfIP == "" {
@@ -217,13 +246,12 @@ func AnnounceToRemote(peerHost string, self Identity) {
 	}
 	selfHost := fmt.Sprintf("%s:%d", selfIP, self.Port)
 	body := fmt.Sprintf(`{"host":%q}`, selfHost)
-	client := &http.Client{Timeout: 3 * time.Second}
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://%s/api/peers/add", peerHost), strings.NewReader(body))
 	if err != nil {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	resp, err := announceClient.Do(req)
 	if err != nil {
 		return
 	}

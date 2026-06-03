@@ -1,6 +1,7 @@
 package core
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 )
@@ -30,16 +32,23 @@ type Server struct {
 	Pick func() ([]string, error)
 	// OnQuit quits the app; injected by the platform shell.
 	OnQuit func()
+	// ConsentHook is called (in a goroutine) when a pending transfer needs
+	// user consent.  The hook should present an Accept/Reject UI and signal
+	// tr.Decision with the result.  Nil = rely on the web UI only.
+	ConsentHook func(tr *Transfer, from, name string, size int64)
 
 	// WebFS is the embedded web UI filesystem (should contain "web" dir).
 	WebFS fs.FS
+
+	// Chat stores per-peer chat messages in memory.
+	Chat *ChatStore
 }
 
 // DefaultPort is the LAN port SwiftDrop serves on for peer-to-peer transfers.
 const DefaultPort = 53317
 
 func NewServer(id Identity, reg *PeerRegistry, trk *Tracker) *Server {
-	return &Server{ID: id, Reg: reg, Trk: trk}
+	return &Server{ID: id, Reg: reg, Trk: trk, Chat: NewChatStore()}
 }
 
 // normalizeIP strips the ::ffff: prefix from IPv6-mapped IPv4 addresses so
@@ -59,6 +68,9 @@ func (s *Server) Handler() http.Handler {
 
 	// Peer-to-peer transfer endpoint (public — any peer on LAN).
 	mux.HandleFunc("/inbox", s.handleInbox)
+
+	// Chat endpoint (public — any peer on LAN).
+	mux.HandleFunc("/chat-inbox", s.handleChatInbox)
 
 	// /api/me and /health are public (peers probe them).
 	mux.HandleFunc("/api/me", s.handleMe)
@@ -90,6 +102,67 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/transfers/clear", s.requireToken(s.handleClearTransfers))
 	mux.HandleFunc("/api/transfers/cancel", s.requireToken(s.handleCancelTransfer))
 	mux.HandleFunc("/api/transfers/retry", s.requireToken(s.handleRetryTransfer))
+	mux.HandleFunc("/api/transfers/pause", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		peerID, fileName, ok := s.Trk.PauseTransfer(r.URL.Query().Get("id"))
+		if !ok {
+			http.Error(w, "not found or not sending", http.StatusNotFound)
+			return
+		}
+		go s.notifyPeerSignal(peerID, fileName, "pause")
+		w.WriteHeader(http.StatusOK)
+	}))
+	mux.HandleFunc("/api/transfers/resume", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		peerID, fileName, ok := s.Trk.ResumeTransfer(r.URL.Query().Get("id"))
+		if !ok {
+			http.Error(w, "not found or not paused", http.StatusNotFound)
+			return
+		}
+		go s.notifyPeerSignal(peerID, fileName, "resume")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Public endpoint: receiving peer is notified by the sender about
+	// pause/resume so its UI can reflect the state.
+	mux.HandleFunc("/transfer-signal", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			File   string `json:"file"`
+			Action string `json:"action"` // "pause" | "resume"
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.File == "" || body.Action == "" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		// Identify the sender by X-From-Name header (set by notifyPeerSignal).
+		peerName := r.Header.Get("X-From-Name")
+		if peerName == "" {
+			http.Error(w, "missing X-From-Name", http.StatusBadRequest)
+			return
+		}
+		s.Trk.SignalRecvTransfer(peerName, body.File, body.Action)
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/api/transfers/accept", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if s.Trk.AcceptTransfer(r.URL.Query().Get("id")) {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			http.Error(w, "not found or not pending", http.StatusNotFound)
+		}
+	}))
+	mux.HandleFunc("/api/transfers/reject", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if s.Trk.RejectTransfer(r.URL.Query().Get("id")) {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			http.Error(w, "not found or not pending", http.StatusNotFound)
+		}
+	}))
+	mux.HandleFunc("/api/chat/send", s.requireToken(s.handleChatSend))
+	mux.HandleFunc("/api/chat/messages", s.requireToken(s.handleChatMessages))
+	mux.HandleFunc("/api/chat/notify", s.requireToken(s.handleChatNotify))
+	mux.HandleFunc("/api/chat/notify/ack", s.requireToken(s.handleChatNotifyAck))
 	mux.HandleFunc("/api/pick", s.requireToken(s.handlePick))
 	mux.HandleFunc("/api/open-folder", s.requireToken(func(w http.ResponseWriter, _ *http.Request) {
 		OpenFolder(DownloadDir())
@@ -196,10 +269,33 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reject files from unpaired senders.
-	if fromID == "" || Pairs.IsPaired(fromID) == nil {
+	key := Pairs.IsPaired(fromID)
+	if fromID == "" || key == nil {
 		log.Printf("inbox rejected: fromID=%q paired=%v pairedIDs=%v", fromID, Pairs.IsPaired(fromID) != nil, Pairs.PairedIDs())
 		http.Error(w, "not paired — pair first", http.StatusForbidden)
 		return
+	}
+
+	// Verify HMAC sender authentication to prevent X-From-ID spoofing.
+	if authHMAC := r.Header.Get("X-Auth-HMAC"); authHMAC != "" {
+		authTime := r.Header.Get("X-Auth-Time")
+		ts, _ := strconv.ParseInt(authTime, 10, 64)
+		delta := time.Now().Unix() - ts
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > 300 { // reject if timestamp > 5 min old
+			http.Error(w, "auth timestamp expired", http.StatusForbidden)
+			return
+		}
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(fromID + "|" + name + "|" + authTime))
+		expected := hex.EncodeToString(mac.Sum(nil))
+		if !hmac.Equal([]byte(authHMAC), []byte(expected)) {
+			log.Printf("inbox HMAC mismatch from %s", fromID)
+			http.Error(w, "authentication failed", http.StatusForbidden)
+			return
+		}
 	}
 
 	// Check free disk space before writing (use original file size when encrypted).
@@ -217,15 +313,6 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	dest := UniquePath(filepath.Join(dlDir, name))
-	f, err := os.Create(dest)
-	if err != nil {
-		http.Error(w, "cannot create file", http.StatusInternalServerError)
-		log.Printf("inbox create %s: %v", dest, err)
-		return
-	}
-
-	// Track the incoming transfer so the UI shows receive progress live.
 	// Encrypted transfers are chunked (Content-Length = -1), so use the
 	// original file size sent in X-File-Size for progress tracking.
 	trackSize := r.ContentLength
@@ -234,7 +321,35 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 			trackSize = fz
 		}
 	}
-	tr := s.Trk.Start(name, trackSize, from, "recv")
+
+	// ── Receiver consent: block until the user accepts or 60s timeout ──
+	tr := s.Trk.StartPending(name, trackSize, from)
+	Notify("SwiftDrop", fmt.Sprintf("%s wants to send %s (%s)", from, name, HumanSize(trackSize)))
+	if s.ConsentHook != nil {
+		go s.ConsentHook(tr, from, name, trackSize)
+	}
+	select {
+	case accepted := <-tr.Decision:
+		if !accepted {
+			s.Trk.Finish(tr, fmt.Errorf("rejected by user"))
+			http.Error(w, "transfer rejected", http.StatusForbidden)
+			return
+		}
+	case <-time.After(60 * time.Second):
+		s.Trk.Finish(tr, fmt.Errorf("no response — auto-rejected"))
+		http.Error(w, "transfer timed out", http.StatusRequestTimeout)
+		return
+	}
+	tr.Status = "sending"
+
+	dest := UniquePath(filepath.Join(dlDir, name))
+	f, err := os.Create(dest)
+	if err != nil {
+		s.Trk.Finish(tr, fmt.Errorf("create file: %w", err))
+		http.Error(w, "cannot create file", http.StatusInternalServerError)
+		log.Printf("inbox create %s: %v", dest, err)
+		return
+	}
 
 	// If the sender signals encryption, decrypt using the paired key.
 	var body io.Reader = &CountingReader{R: r.Body, Tr: tr}
@@ -256,6 +371,17 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "decryption failed", http.StatusBadRequest)
 			log.Printf("inbox decrypt %s: %v", dest, err)
 			return
+		}
+		// Verify decrypted file size matches X-File-Size to detect truncation.
+		if origSize > 0 {
+			if fi, err := f.Stat(); err == nil && fi.Size() != origSize {
+				s.Trk.Finish(tr, fmt.Errorf("size mismatch: expected %d, got %d", origSize, fi.Size()))
+				f.Close()
+				os.Remove(dest)
+				http.Error(w, "decrypted file size mismatch", http.StatusBadRequest)
+				log.Printf("inbox %s: size mismatch (expected %d, got %d)", dest, origSize, fi.Size())
+				return
+			}
 		}
 		n := atomic.LoadInt64(&tr.Sent)
 		closeErr := f.Close()
@@ -647,6 +773,27 @@ func (s *Server) handleQRClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("QR pairing accepted for %s (%s)", req.Name, req.ID)
 	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
+}
+
+// notifyPeerSignal sends a pause/resume signal to the receiving peer so their
+// UI can show the transfer as paused. Best-effort: errors are silently ignored.
+func (s *Server) notifyPeerSignal(peerID, fileName, action string) {
+	peer, ok := s.Reg.Get(peerID)
+	if !ok {
+		return
+	}
+	body := fmt.Sprintf(`{"file":%q,"action":%q}`, fileName, action)
+	req, err := http.NewRequest(http.MethodPost, "http://"+peer.Host+"/transfer-signal", strings.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-From-Name", s.ID.Name)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 }
 
 // StartServer launches the peer-facing HTTP server (inbox + api) on the LAN
