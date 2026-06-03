@@ -39,6 +39,9 @@ type Server struct {
 
 	// WebFS is the embedded web UI filesystem (should contain "web" dir).
 	WebFS fs.FS
+
+	// RecvText holds the most recently received text snippet.
+	RecvText TextBuffer
 }
 
 // DefaultPort is the LAN port SwiftDrop serves on for peer-to-peer transfers.
@@ -65,6 +68,9 @@ func (s *Server) Handler() http.Handler {
 
 	// Peer-to-peer transfer endpoint (public — any peer on LAN).
 	mux.HandleFunc("/inbox", s.handleInbox)
+
+	// Text sharing endpoint (public — any peer on LAN).
+	mux.HandleFunc("/text-inbox", s.handleTextInbox)
 
 	// /api/me and /health are public (peers probe them).
 	mux.HandleFunc("/api/me", s.handleMe)
@@ -153,6 +159,8 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, "not found or not pending", http.StatusNotFound)
 		}
 	}))
+	mux.HandleFunc("/api/send-text", s.requireToken(s.handleSendText))
+	mux.HandleFunc("/api/received-text", s.requireToken(s.handleReceivedText))
 	mux.HandleFunc("/api/pick", s.requireToken(s.handlePick))
 	mux.HandleFunc("/api/open-folder", s.requireToken(func(w http.ResponseWriter, _ *http.Request) {
 		OpenFolder(DownloadDir())
