@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -23,19 +24,28 @@ func StartKeepalive(ctx context.Context, reg *PeerRegistry, self Identity) {
 				return
 			case <-ticker.C:
 			}
-			for _, k := range reg.KnownList() {
+			known := reg.KnownList()
+			sem := make(chan struct{}, 8) // max 8 concurrent probes
+			var wg sync.WaitGroup
+			for _, k := range known {
 				if k.ID == self.ID || reg.IsIgnored(k.ID) {
 					continue
 				}
-				probed, err := ProbePeer(k.Host)
-				if err == nil && probed.ID == k.ID {
-					probed.Manual = reg.IsManual(k.ID)
-					reg.Upsert(probed) // visible + refreshes known host
-					go AnnounceToRemote(k.Host, self)
-				} else {
-					reg.Remove(k.ID) // unreachable here; mDNS may re-find at a new host
-				}
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(k Peer) {
+					defer func() { <-sem; wg.Done() }()
+					probed, err := ProbePeer(k.Host)
+					if err == nil && probed.ID == k.ID {
+						probed.Manual = reg.IsManual(k.ID)
+						reg.Upsert(probed)
+						go AnnounceToRemote(k.Host, self)
+					} else {
+						reg.Remove(k.ID)
+					}
+				}(k)
 			}
+			wg.Wait()
 		}
 	}()
 }

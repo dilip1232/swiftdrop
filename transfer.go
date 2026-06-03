@@ -210,6 +210,17 @@ func ProbePeer(host string) (Peer, error) {
 
 // AnnounceToRemote tells a remote peer about us so they add us to their device
 // list. This makes discovery bidirectional even when mDNS is one-way.
+// announceClient is a shared HTTP client for lightweight announce/probe calls.
+var announceClient = &http.Client{
+	Timeout: 3 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        16,
+		IdleConnTimeout:     30 * time.Second,
+		DisableCompression:  true,
+		TLSHandshakeTimeout: 3 * time.Second,
+	},
+}
+
 func AnnounceToRemote(peerHost string, self Identity) {
 	selfIP := LocalIP()
 	if selfIP == "" {
@@ -217,13 +228,12 @@ func AnnounceToRemote(peerHost string, self Identity) {
 	}
 	selfHost := fmt.Sprintf("%s:%d", selfIP, self.Port)
 	body := fmt.Sprintf(`{"host":%q}`, selfHost)
-	client := &http.Client{Timeout: 3 * time.Second}
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://%s/api/peers/add", peerHost), strings.NewReader(body))
 	if err != nil {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	resp, err := announceClient.Do(req)
 	if err != nil {
 		return
 	}

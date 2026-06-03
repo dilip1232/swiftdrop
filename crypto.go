@@ -245,12 +245,15 @@ func EncryptStream(w io.Writer, r io.Reader, key []byte) error {
 	}
 
 	buf := make([]byte, ChunkPlain)
+	nonce := make([]byte, gcm.NonceSize())
+	// Pre-allocate ciphertext buffer: max plaintext + GCM tag.
+	ctBuf := make([]byte, 0, ChunkPlain+gcm.Overhead())
 	var idx uint64
 	for {
 		n, readErr := io.ReadFull(r, buf)
 		if n > 0 {
-			nonce := chunkNonce(baseNonce, idx)
-			ct := gcm.Seal(nil, nonce, buf[:n], nil)
+			chunkNonceInPlace(nonce, baseNonce, idx)
+			ct := gcm.Seal(ctBuf[:0], nonce, buf[:n], nil)
 			if err := writeChunk(w, ct); err != nil {
 				return err
 			}
@@ -282,6 +285,11 @@ func DecryptStream(w io.Writer, r io.Reader, key []byte) error {
 		return fmt.Errorf("read nonce: %w", err)
 	}
 
+	nonce := make([]byte, gcm.NonceSize())
+	// Pre-allocate read buffer for ciphertext chunks.
+	ctBuf := make([]byte, ChunkPlain+gcm.Overhead()+1024)
+	// Pre-allocate plaintext output buffer.
+	ptBuf := make([]byte, 0, ChunkPlain)
 	var idx uint64
 	for {
 		var cLen uint32
@@ -291,15 +299,14 @@ func DecryptStream(w io.Writer, r io.Reader, key []byte) error {
 		if cLen == 0 {
 			break // end marker
 		}
-		if cLen > ChunkPlain+uint32(gcm.Overhead())+1024 {
+		if int(cLen) > len(ctBuf) {
 			return fmt.Errorf("chunk too large: %d", cLen)
 		}
-		ct := make([]byte, cLen)
-		if _, err := io.ReadFull(r, ct); err != nil {
+		if _, err := io.ReadFull(r, ctBuf[:cLen]); err != nil {
 			return fmt.Errorf("read chunk: %w", err)
 		}
-		nonce := chunkNonce(baseNonce, idx)
-		pt, err := gcm.Open(nil, nonce, ct, nil)
+		chunkNonceInPlace(nonce, baseNonce, idx)
+		pt, err := gcm.Open(ptBuf[:0], nonce, ctBuf[:cLen], nil)
 		if err != nil {
 			return fmt.Errorf("decrypt chunk %d: %w", idx, err)
 		}
@@ -311,14 +318,12 @@ func DecryptStream(w io.Writer, r io.Reader, key []byte) error {
 	return nil
 }
 
-func chunkNonce(base []byte, idx uint64) []byte {
-	n := make([]byte, len(base))
-	copy(n, base)
-	// XOR the last 8 bytes with the counter
+// chunkNonceInPlace fills dst from base, then XORs the counter into the low 8 bytes.
+func chunkNonceInPlace(dst, base []byte, idx uint64) {
+	copy(dst, base)
 	for i := 0; i < 8; i++ {
-		n[len(n)-1-i] ^= byte(idx >> (i * 8))
+		dst[len(dst)-1-i] ^= byte(idx >> (i * 8))
 	}
-	return n
 }
 
 func writeChunk(w io.Writer, data []byte) error {
