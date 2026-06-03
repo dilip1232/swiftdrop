@@ -1,9 +1,9 @@
 name: Release DMG
 
 on:
-  push:
-    tags:
-      - 'v*'
+  pull_request:
+    types: [closed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -12,24 +12,41 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build:
+  release:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           path: swiftdrop-mac
 
       - uses: actions/checkout@v4
         with:
           repository: dilip1232/swiftdrop-core
-          ref: dev
+          ref: main
           path: swiftdrop-core
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: swiftdrop-mac/go.mod
+
+      - name: Extract version
+        id: version
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          VERSION="${BRANCH#release/}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        working-directory: swiftdrop-mac
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
 
       - name: Build DMG
         working-directory: swiftdrop-mac
@@ -40,11 +57,13 @@ jobs:
       - name: Rename DMG with version
         working-directory: swiftdrop-mac
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${VERSION#v}"
           mv SwiftDrop.dmg SwiftDrop-${VERSION}.dmg
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          tag_name: ${{ steps.version.outputs.version }}
+          body: ${{ github.event.pull_request.body }}
           files: swiftdrop-mac/SwiftDrop-*.dmg
