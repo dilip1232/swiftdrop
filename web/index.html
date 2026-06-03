@@ -203,15 +203,18 @@
 
     <div class="chat-panel" id="chatPanel">
       <div class="chat-hdr">
-        <span class="chat-hdr-name" id="chatName"></span>
-        <span class="chat-hdr-close" id="chatClose">✕</span>
+        <div class="chat-hdr-left">
+          <div class="chat-hdr-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+          <span class="chat-hdr-name" id="chatName"></span>
+        </div>
+        <span class="chat-hdr-close" id="chatClose"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>
       </div>
       <div class="chat-msgs" id="chatMsgs">
-        <div class="chat-empty">No messages yet</div>
+        <div class="chat-empty"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>No messages yet</div>
       </div>
       <div class="chat-input">
         <textarea id="chatInput" placeholder="Type a message…" rows="1"></textarea>
-        <button class="chat-send" id="chatSendBtn" disabled>Send</button>
+        <button class="chat-send" id="chatSendBtn" disabled><svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
       </div>
     </div>
 
@@ -315,7 +318,7 @@ function renderDevices() {
     const paired = state.pairedIds && state.pairedIds.has(d.id);
     row.innerHTML = `<div class="ic">${platformIcon(d.platform)}</div>
       <div class="info"><div class="nm">${escapeHtml(d.name)}</div><div class="pf">${sub}</div></div>
-      ${paired ? '<span class="chat-btn" title="Chat">💬</span>' : ''}
+      ${paired ? '<span class="chat-btn" title="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="unread"></span></span>' : ''}
       ${paired ? '<span class="pair-btn paired">Paired</span>' : '<span class="pair-btn">Pair</span>'}
       <span class="rm" title="Remove">×</span>`;
     row.onclick = () => { state.target = d.id; renderDevices(); updateSendState(); };
