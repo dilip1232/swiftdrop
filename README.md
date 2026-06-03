@@ -26,6 +26,10 @@ files land in `~/Downloads/SwiftDrop/`.
 - **No file size cap** — transfers of any size; disk space checked before writing
 - **Drag-and-drop** — drop files directly onto the drawer
 - **LAN subnet scan** — fallback discovery for networks where mDNS is unavailable
+- **Per-device chat** — chat with individual paired devices; SVG icons, animated panel, unread indicator
+- **Receiver consent** — accept/reject dialog (native NSAlert) before incoming transfers are written
+- **Pause/resume transfers** — pause and resume in-flight transfers from the UI; remote peer sees paused state
+- **Adaptive polling** — fast polling during active transfers, slow when idle
 
 ## Speed: no compromise
 
