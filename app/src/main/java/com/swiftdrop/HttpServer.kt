@@ -45,6 +45,9 @@ class HttpServer : NanoHTTPD(State.PORT) {
             uri == "/api/transfers/reject" -> withToken(session) { handleAcceptReject(session, false) }
             uri == "/api/send-path" && session.method == Method.POST -> withToken(session) { handleSend(session) }
             uri == "/transfer-signal" && session.method == Method.POST -> handleTransferSignal(session)
+            uri == "/text-inbox" && session.method == Method.POST -> handleTextInbox(session)
+            uri == "/api/send-text" && session.method == Method.POST -> withToken(session) { handleSendText(session) }
+            uri == "/api/received-text" -> withToken(session) { handleReceivedText(session) }
             uri == "/api/peers/add" && session.method == Method.POST -> handleAddPeer(session) // public — peers announce themselves
             uri == "/api/peers/remove" && session.method == Method.POST -> withToken(session) { handleRemovePeer(session) }
             // Pairing
@@ -406,6 +409,66 @@ class HttpServer : NanoHTTPD(State.PORT) {
             conn.responseCode // trigger the request
             conn.disconnect()
         } catch (_: Exception) { /* best-effort */ }
+    }
+
+    // ---- Text sharing ----
+
+    private fun handleTextInbox(session: IHTTPSession): Response {
+        val map = HashMap<String, String>()
+        session.parseBody(map)
+        val body = JSONObject(map["postData"] ?: "{}")
+        val text = body.optString("text", "")
+        val from = body.optString("from", "Unknown")
+        if (text.isEmpty())
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "bad request")
+        State.recvText = text; State.recvTextFrom = from; State.recvTextTs = System.currentTimeMillis()
+        // Copy to clipboard
+        val act = State.foregroundActivity
+        if (act != null) {
+            act.runOnUiThread {
+                val cm = act.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("SwiftDrop", text))
+            }
+        }
+        // Show notification
+        val snippet = if (text.length > 80) text.take(80) + "…" else text
+        Notifier.show(State.appContext, "Text from $from: $snippet")
+        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "ok")
+    }
+
+    private fun handleSendText(session: IHTTPSession): Response {
+        val map = HashMap<String, String>()
+        session.parseBody(map)
+        val body = JSONObject(map["postData"] ?: "{}")
+        val text = body.optString("text", "")
+        if (text.isEmpty())
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "bad request")
+        // Broadcast to every paired & reachable peer.
+        var sent = 0
+        for (id in PairStore.pairedIDs()) {
+            val peer = State.peer(id) ?: continue
+            sent++
+            Thread {
+                try {
+                    val url = java.net.URL("http://${peer.host}/text-inbox")
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "POST"; conn.connectTimeout = 5000; conn.readTimeout = 5000
+                    conn.setRequestProperty("Content-Type", "application/json"); conn.doOutput = true
+                    val payload = JSONObject().put("from", State.deviceName).put("text", text).toString()
+                    conn.outputStream.use { it.write(payload.toByteArray()) }
+                    conn.responseCode; conn.disconnect()
+                } catch (_: Exception) {}
+            }.start()
+        }
+        return json("""{"ok":true,"sent":$sent}""")
+    }
+
+    private fun handleReceivedText(session: IHTTPSession): Response {
+        val since = session.parms["since"]?.toLongOrNull() ?: 0L
+        if (State.recvTextTs > since) {
+            return json(JSONObject().put("text", State.recvText).put("from", State.recvTextFrom).put("ts", State.recvTextTs).toString())
+        }
+        return json("""{"ts":0}""")
     }
 
     private fun transfersJson(): String {

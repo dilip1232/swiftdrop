@@ -165,6 +165,8 @@ object PairStore {
 
     fun isPaired(id: String): ByteArray? = synchronized(keys) { keys[id] }
 
+    fun pairedIDs(): List<String> = synchronized(keys) { keys.keys.toList() }
+
     fun generatePIN(): String {
         val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
         val pin = String.format("%06d", BigInteger(1, ByteArray(4).also { SecureRandom().nextBytes(it) }).mod(BigInteger.valueOf(1_000_000)))
