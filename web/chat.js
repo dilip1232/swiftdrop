@@ -5,6 +5,7 @@ let chatPeer = null;      // currently open chat peer ID
 let chatPeerName = "";
 let chatLastTs = 0;       // last message timestamp we rendered
 let chatRenderedIds = new Set();
+let chatClosedAt = 0;     // timestamp when chat was last closed (cooldown)
 
 function openChat(peerId, peerName) {
   chatPeer = peerId;
@@ -12,7 +13,7 @@ function openChat(peerId, peerName) {
   chatLastTs = 0;
   chatRenderedIds.clear();
   $("#chatName").textContent = peerName;
-  $("#chatMsgs").innerHTML = '<div class="chat-empty">No messages yet</div>';
+  $("#chatMsgs").innerHTML = '<div class="chat-empty"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>No messages yet</div>';
   $("#chatPanel").classList.add("open");
   $("#chatInput").value = "";
   $("#chatSendBtn").disabled = true;
@@ -23,7 +24,10 @@ function openChat(peerId, peerName) {
 
 function closeChat() {
   chatPeer = null;
+  chatClosedAt = Date.now();
   $("#chatPanel").classList.remove("open");
+  // Clear any pending notification so it doesn't reopen immediately
+  apiFetch("/api/chat/notify/ack", { method: "POST" }).catch(() => {});
 }
 
 $("#chatClose").onclick = closeChat;
@@ -103,19 +107,24 @@ async function pollChatMessages() {
       if (m.ts > chatLastTs) chatLastTs = m.ts;
       added = true;
     }
-    if (added) container.scrollTop = container.scrollHeight;
+    if (added) {
+      container.scrollTop = container.scrollHeight;
+      // Ack any notification for this peer while chat is open
+      apiFetch("/api/chat/notify/ack", { method: "POST" }).catch(() => {});
+    }
   } catch {}
 }
 setInterval(pollChatMessages, 800);
 
 // Auto-open chat when notification is clicked (window gets focus)
 async function checkChatNotify() {
+  // Don't auto-open if user just closed chat (3s cooldown)
+  if (Date.now() - chatClosedAt < 3000) return;
   try {
     const res = await apiFetch("/api/chat/notify");
     if (!res.ok) return;
     const data = await res.json();
     if (data.peer && !chatPeer) {
-      // Find the device name
       const dev = state.devices.find(d => d.id === data.peer);
       const name = dev ? dev.name : data.name || "Device";
       openChat(data.peer, name);
@@ -123,3 +132,9 @@ async function checkChatNotify() {
   } catch {}
 }
 setInterval(checkChatNotify, 2000);
+
+// Immediately check notifications when window regains focus (e.g. notification click)
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) checkChatNotify();
+});
+window.addEventListener("focus", checkChatNotify);
