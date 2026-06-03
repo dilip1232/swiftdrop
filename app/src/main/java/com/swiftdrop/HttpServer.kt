@@ -143,15 +143,9 @@ class HttpServer : NanoHTTPD(State.PORT) {
         val sizeStr = humanSize(trackSize)
         val activity = State.foregroundActivity
         if (activity != null) {
-            // In-app dialog when the Activity is visible.
+            // In-app styled dialog when the Activity is visible.
             activity.runOnUiThread {
-                android.app.AlertDialog.Builder(activity)
-                    .setTitle("Incoming file from $from")
-                    .setMessage("$name ($sizeStr)")
-                    .setCancelable(false)
-                    .setPositiveButton("Accept") { d, _ -> tr.accepted = true; tr.decision.countDown(); d.dismiss() }
-                    .setNegativeButton("Reject") { d, _ -> tr.accepted = false; tr.decision.countDown(); d.dismiss() }
-                    .show()
+                showConsentDialog(activity, tr, from, name, sizeStr)
             }
         } else {
             // Background: use notification with action buttons.
@@ -510,6 +504,136 @@ class HttpServer : NanoHTTPD(State.PORT) {
             ?: return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "invalid or expired token")
         return json("""{"key":"${PairStore.bytesToHex(key)}"}"""
         )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun showConsentDialog(activity: android.app.Activity, tr: Transfer, from: String, fileName: String, size: String) {
+        val dp = activity.resources.displayMetrics.density
+        fun dp(v: Int) = (v * dp).toInt()
+
+        val card = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(dp(24), dp(24), dp(24), dp(20))
+            setBackgroundColor(0xFF1C1C1E.toInt())
+        }
+
+        // Icon
+        val icon = android.widget.ImageView(activity).apply {
+            setImageResource(android.R.drawable.stat_sys_download)
+            setColorFilter(0xFF3B82F6.toInt())
+            layoutParams = android.widget.LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+                gravity = android.view.Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(16)
+            }
+        }
+        card.addView(icon)
+
+        // Title
+        val title = android.widget.TextView(activity).apply {
+            text = "Incoming File"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 20f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = android.view.Gravity.CENTER
+            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(4) }
+        }
+        card.addView(title)
+
+        // Subtitle (sender)
+        val sub = android.widget.TextView(activity).apply {
+            text = "from $from"
+            setTextColor(0xFF9CA3AF.toInt())
+            textSize = 14f
+            gravity = android.view.Gravity.CENTER
+            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) }
+        }
+        card.addView(sub)
+
+        // File info card
+        val infoCard = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            val bg = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF2A2A2E.toInt())
+                cornerRadius = dp(12).toFloat()
+            }
+            background = bg
+            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(20) }
+        }
+        val fnText = android.widget.TextView(activity).apply {
+            text = fileName
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 15f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+        }
+        infoCard.addView(fnText)
+        val szText = android.widget.TextView(activity).apply {
+            text = size
+            setTextColor(0xFF9CA3AF.toInt())
+            textSize = 13f
+            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) }
+        }
+        infoCard.addView(szText)
+        card.addView(infoCard)
+
+        // Button row
+        val row = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2)
+        }
+
+        val dlg = android.app.Dialog(activity).apply {
+            requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+            setCancelable(false)
+        }
+
+        val btnParams = android.widget.LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6); marginStart = dp(6) }
+
+        val rejectBtn = android.widget.TextView(activity).apply {
+            text = "Reject"
+            setTextColor(0xFFFF453A.toInt())
+            textSize = 15f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = android.view.Gravity.CENTER
+            layoutParams = btnParams
+            val bg = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF3A2A2A.toInt())
+                cornerRadius = dp(12).toFloat()
+            }
+            background = bg
+            setOnClickListener { tr.accepted = false; tr.decision.countDown(); dlg.dismiss() }
+        }
+        row.addView(rejectBtn)
+
+        val acceptBtn = android.widget.TextView(activity).apply {
+            text = "Accept"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 15f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = android.view.Gravity.CENTER
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6) }
+            val bg = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF3B82F6.toInt())
+                cornerRadius = dp(12).toFloat()
+            }
+            background = bg
+            setOnClickListener { tr.accepted = true; tr.decision.countDown(); dlg.dismiss() }
+        }
+        row.addView(acceptBtn)
+        card.addView(row)
+
+        dlg.setContentView(card)
+        dlg.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF1C1C1E.toInt())
+                cornerRadius = dp(20).toFloat()
+            })
+            setLayout((activity.resources.displayMetrics.widthPixels * 0.85).toInt(), android.view.WindowManager.LayoutParams.WRAP_CONTENT)
+            setDimAmount(0.6f)
+        }
+        dlg.show()
     }
 
     private fun handlePairClaim(session: IHTTPSession): Response {
