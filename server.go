@@ -97,19 +97,48 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/transfers/cancel", s.requireToken(s.handleCancelTransfer))
 	mux.HandleFunc("/api/transfers/retry", s.requireToken(s.handleRetryTransfer))
 	mux.HandleFunc("/api/transfers/pause", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
-		if s.Trk.PauseTransfer(r.URL.Query().Get("id")) {
-			w.WriteHeader(http.StatusOK)
-		} else {
+		peerID, fileName, ok := s.Trk.PauseTransfer(r.URL.Query().Get("id"))
+		if !ok {
 			http.Error(w, "not found or not sending", http.StatusNotFound)
+			return
 		}
+		go s.notifyPeerSignal(peerID, fileName, "pause")
+		w.WriteHeader(http.StatusOK)
 	}))
 	mux.HandleFunc("/api/transfers/resume", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
-		if s.Trk.ResumeTransfer(r.URL.Query().Get("id")) {
-			w.WriteHeader(http.StatusOK)
-		} else {
+		peerID, fileName, ok := s.Trk.ResumeTransfer(r.URL.Query().Get("id"))
+		if !ok {
 			http.Error(w, "not found or not paused", http.StatusNotFound)
+			return
 		}
+		go s.notifyPeerSignal(peerID, fileName, "resume")
+		w.WriteHeader(http.StatusOK)
 	}))
+
+	// Public endpoint: receiving peer is notified by the sender about
+	// pause/resume so its UI can reflect the state.
+	mux.HandleFunc("/transfer-signal", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			File   string `json:"file"`
+			Action string `json:"action"` // "pause" | "resume"
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.File == "" || body.Action == "" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		// Identify the sender by X-From-Name header (set by notifyPeerSignal).
+		peerName := r.Header.Get("X-From-Name")
+		if peerName == "" {
+			http.Error(w, "missing X-From-Name", http.StatusBadRequest)
+			return
+		}
+		s.Trk.SignalRecvTransfer(peerName, body.File, body.Action)
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("/api/transfers/accept", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
 		if s.Trk.AcceptTransfer(r.URL.Query().Get("id")) {
 			w.WriteHeader(http.StatusOK)
@@ -734,6 +763,27 @@ func (s *Server) handleQRClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("QR pairing accepted for %s (%s)", req.Name, req.ID)
 	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
+}
+
+// notifyPeerSignal sends a pause/resume signal to the receiving peer so their
+// UI can show the transfer as paused. Best-effort: errors are silently ignored.
+func (s *Server) notifyPeerSignal(peerID, fileName, action string) {
+	peer, ok := s.Reg.Get(peerID)
+	if !ok {
+		return
+	}
+	body := fmt.Sprintf(`{"file":%q,"action":%q}`, fileName, action)
+	req, err := http.NewRequest(http.MethodPost, "http://"+peer.Host+"/transfer-signal", strings.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-From-Name", s.ID.Name)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 }
 
 // StartServer launches the peer-facing HTTP server (inbox + api) on the LAN

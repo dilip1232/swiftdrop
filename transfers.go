@@ -152,41 +152,70 @@ func (t *Tracker) CancelTransfer(id string) {
 	}
 }
 
-// PauseTransfer pauses an in-flight transfer.
-func (t *Tracker) PauseTransfer(id string) bool {
+// PauseTransfer pauses an in-flight transfer. Returns the peer ID and file
+// name so the caller can notify the receiving peer.
+func (t *Tracker) PauseTransfer(id string) (peerID, fileName string, ok bool) {
 	t.mu.Lock()
 	tr := t.items[id]
 	t.mu.Unlock()
 	if tr == nil || tr.Status != "sending" {
-		return false
+		return "", "", false
 	}
 	tr.PauseMu.Lock()
 	defer tr.PauseMu.Unlock()
 	if tr.PauseCh != nil {
-		return false // already paused
+		return "", "", false // already paused
 	}
 	tr.PauseCh = make(chan struct{})
 	tr.Status = "paused"
-	return true
+	return tr.PeerID, tr.Name, true
 }
 
-// ResumeTransfer resumes a paused transfer.
-func (t *Tracker) ResumeTransfer(id string) bool {
+// ResumeTransfer resumes a paused transfer. Returns the peer ID and file
+// name so the caller can notify the receiving peer.
+func (t *Tracker) ResumeTransfer(id string) (peerID, fileName string, ok bool) {
 	t.mu.Lock()
 	tr := t.items[id]
 	t.mu.Unlock()
 	if tr == nil || tr.Status != "paused" {
-		return false
+		return "", "", false
 	}
 	tr.PauseMu.Lock()
 	defer tr.PauseMu.Unlock()
 	if tr.PauseCh == nil {
-		return false
+		return "", "", false
 	}
 	close(tr.PauseCh) // unblocks CountingReader
 	tr.PauseCh = nil
 	tr.Status = "sending"
-	return true
+	return tr.PeerID, tr.Name, true
+}
+
+// SignalRecvTransfer is called when a sending peer signals that it has paused
+// or resumed a transfer. It finds the matching inbound "recv" transfer by
+// file name + peer name and updates its status.
+func (t *Tracker) SignalRecvTransfer(peerName, fileName, action string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, id := range t.order {
+		tr := t.items[id]
+		if tr == nil || tr.Dir != "recv" || tr.Name != fileName || tr.Peer != peerName {
+			continue
+		}
+		switch action {
+		case "pause":
+			if tr.Status == "sending" {
+				tr.Status = "paused"
+				return true
+			}
+		case "resume":
+			if tr.Status == "paused" {
+				tr.Status = "sending"
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // RetryTransfer removes a failed/canceled outbound send and returns its path
