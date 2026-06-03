@@ -21,6 +21,10 @@ type Transfer struct {
 
 	Cancel context.CancelFunc `json:"-"` // aborts the in-flight request
 
+	// Pause support: CountingReader blocks reads while paused.
+	PauseMu sync.Mutex    `json:"-"`
+	PauseCh chan struct{} `json:"-"` // closed = unpaused; non-nil+open = paused
+
 	// For retry: stored only for outbound sends
 	FilePath string `json:"-"`
 	PeerID   string `json:"-"`
@@ -30,6 +34,7 @@ type Transfer struct {
 
 	// Computed for JSON output
 	Retryable bool `json:"retryable,omitempty"`
+	Paused    bool `json:"paused,omitempty"`
 }
 
 // Tracker holds recent + active transfers so the UI can render progress even
@@ -132,12 +137,56 @@ func (t *Tracker) CancelTransfer(id string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	tr := t.items[id]
-	if tr != nil && tr.Status == "sending" {
+	if tr != nil && (tr.Status == "sending" || tr.Status == "paused") {
+		// Unpause first so the streaming goroutine can observe the cancel.
+		tr.PauseMu.Lock()
+		if tr.PauseCh != nil {
+			close(tr.PauseCh)
+			tr.PauseCh = nil
+		}
+		tr.PauseMu.Unlock()
 		if tr.Cancel != nil {
 			tr.Cancel()
 		}
 		tr.Status = "canceled"
 	}
+}
+
+// PauseTransfer pauses an in-flight transfer.
+func (t *Tracker) PauseTransfer(id string) bool {
+	t.mu.Lock()
+	tr := t.items[id]
+	t.mu.Unlock()
+	if tr == nil || tr.Status != "sending" {
+		return false
+	}
+	tr.PauseMu.Lock()
+	defer tr.PauseMu.Unlock()
+	if tr.PauseCh != nil {
+		return false // already paused
+	}
+	tr.PauseCh = make(chan struct{})
+	tr.Status = "paused"
+	return true
+}
+
+// ResumeTransfer resumes a paused transfer.
+func (t *Tracker) ResumeTransfer(id string) bool {
+	t.mu.Lock()
+	tr := t.items[id]
+	t.mu.Unlock()
+	if tr == nil || tr.Status != "paused" {
+		return false
+	}
+	tr.PauseMu.Lock()
+	defer tr.PauseMu.Unlock()
+	if tr.PauseCh == nil {
+		return false
+	}
+	close(tr.PauseCh) // unblocks CountingReader
+	tr.PauseCh = nil
+	tr.Status = "sending"
+	return true
 }
 
 // RetryTransfer removes a failed/canceled outbound send and returns its path
@@ -167,7 +216,7 @@ func (t *Tracker) ClearFinished() {
 	defer t.mu.Unlock()
 	kept := t.order[:0:0]
 	for _, id := range t.order {
-		if tr := t.items[id]; tr != nil && tr.Status == "sending" {
+		if tr := t.items[id]; tr != nil && (tr.Status == "sending" || tr.Status == "paused") {
 			kept = append(kept, id)
 		} else {
 			delete(t.items, id)
@@ -184,11 +233,12 @@ func (t *Tracker) List() []Transfer {
 	for _, id := range t.order {
 		tr := t.items[id]
 		retryable := tr.Dir == "send" && (tr.Status == "error" || tr.Status == "canceled") && tr.FilePath != ""
+		paused := tr.Status == "paused"
 		out = append(out, Transfer{
 			ID: tr.ID, Name: tr.Name, Size: tr.Size,
 			Sent: atomic.LoadInt64(&tr.Sent), Status: tr.Status,
 			Peer: tr.Peer, Dir: tr.Dir, Err: tr.Err,
-			Retryable: retryable,
+			Retryable: retryable, Paused: paused,
 		})
 	}
 	return out

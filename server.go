@@ -96,6 +96,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/transfers/clear", s.requireToken(s.handleClearTransfers))
 	mux.HandleFunc("/api/transfers/cancel", s.requireToken(s.handleCancelTransfer))
 	mux.HandleFunc("/api/transfers/retry", s.requireToken(s.handleRetryTransfer))
+	mux.HandleFunc("/api/transfers/pause", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if s.Trk.PauseTransfer(r.URL.Query().Get("id")) {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			http.Error(w, "not found or not sending", http.StatusNotFound)
+		}
+	}))
+	mux.HandleFunc("/api/transfers/resume", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if s.Trk.ResumeTransfer(r.URL.Query().Get("id")) {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			http.Error(w, "not found or not paused", http.StatusNotFound)
+		}
+	}))
 	mux.HandleFunc("/api/transfers/accept", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
 		if s.Trk.AcceptTransfer(r.URL.Query().Get("id")) {
 			w.WriteHeader(http.StatusOK)

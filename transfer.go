@@ -27,6 +27,13 @@ type CountingReader struct {
 }
 
 func (c *CountingReader) Read(p []byte) (int, error) {
+	// Block while the transfer is paused.
+	c.Tr.PauseMu.Lock()
+	ch := c.Tr.PauseCh
+	c.Tr.PauseMu.Unlock()
+	if ch != nil {
+		<-ch // blocks until channel is closed (resume)
+	}
 	n, err := c.R.Read(p)
 	if n > 0 {
 		atomic.AddInt64(&c.Tr.Sent, int64(n))
