@@ -145,10 +145,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
         val responded = tr.decision.await(60, java.util.concurrent.TimeUnit.SECONDS)
         if (!responded || !tr.accepted) {
             tr.status = "error"; tr.err = if (responded) "rejected by user" else "no response — auto-rejected"
-            return newFixedLengthResponse(
-                if (responded) Response.Status.FORBIDDEN else Response.Status(408, "Request Timeout"),
-                MIME_PLAINTEXT, tr.err
-            )
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, tr.err)
         }
         tr.status = "sending"
 
