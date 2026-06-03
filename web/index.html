@@ -136,6 +136,27 @@
   .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: sp 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
   @keyframes sp { to { transform: rotate(360deg); } }
 
+  /* Text sharing */
+  .textshare { margin-bottom: 10px; }
+  .ts-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .ts-status { font-size: 9.5px; color: var(--muted); transition: .2s; }
+  .ts-status.sent { color: var(--ok); }
+  .ts-status.recv { color: var(--accent); }
+  .ts-copy {
+    font-size: 10px; font-weight: 600; color: var(--muted); cursor: pointer;
+    padding: 2px 7px; border: 1px solid var(--border); border-radius: 5px;
+    background: var(--panel-2); transition: .12s; line-height: 1.3;
+  }
+  .ts-copy:hover { border-color: var(--accent); color: var(--accent); }
+  .textshare textarea {
+    width: 100%; min-height: 50px; max-height: 120px; resize: vertical;
+    font: inherit; font-size: 12px; padding: 9px 11px;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--panel);
+    color: var(--text); outline: none; transition: border-color .15s;
+  }
+  .textshare textarea::placeholder { color: var(--muted); }
+  .textshare textarea:focus { border-color: var(--accent); }
+
   /* Subtle, soft scrollbars */
   ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
@@ -198,6 +219,15 @@
     <div class="sendbar">
       <button id="sendBtn" disabled>Send</button>
       <button class="ghost" id="clearBtn">Clear</button>
+    </div>
+
+    <div class="stitle">Share text</div>
+    <div class="textshare">
+      <div class="ts-bar">
+        <span class="ts-status" id="tsStatus">Sends to all paired devices</span>
+        <span class="ts-copy" id="tsCopy">Copy</span>
+      </div>
+      <textarea id="textArea" placeholder="Type or paste to share instantly…" spellcheck="false"></textarea>
     </div>
 
   </div>
@@ -441,6 +471,7 @@ function updateSendState() {
   } else {
     $("#dropHint").textContent = "Sending to " + tgt.name;
   }
+  if (typeof updateTextHint === "function") updateTextHint();
 }
 
 async function sendAll() {
@@ -640,6 +671,77 @@ setInterval(loadMe, 4000);        // refresh own IP on network change
 setInterval(pollDevices, 2000);
 setInterval(pollTransfers, 700);
 setInterval(refreshPairedStatus, 10000);
+
+// ---- Text sharing ----
+let textSendTimer = null;
+let lastTextTs = 0;
+let textIsLocal = false;
+
+const textArea = $("#textArea");
+const tsStatus = $("#tsStatus");
+
+function updateTextHint() {
+  const count = state.pairedIds.size;
+  if (count === 0) { tsStatus.textContent = "Pair a device to share"; tsStatus.className = "ts-status"; }
+  else { tsStatus.textContent = "Sends to " + count + " paired device" + (count > 1 ? "s" : ""); tsStatus.className = "ts-status"; }
+}
+
+textArea.addEventListener("input", () => {
+  textIsLocal = true;
+  clearTimeout(textSendTimer);
+  textSendTimer = setTimeout(sendText, 500);
+});
+textArea.addEventListener("paste", () => {
+  textIsLocal = true;
+  clearTimeout(textSendTimer);
+  textSendTimer = setTimeout(sendText, 100);
+});
+
+$("#tsCopy").addEventListener("click", async () => {
+  const text = textArea.value;
+  if (!text) return;
+  try { await navigator.clipboard.writeText(text); } catch {}
+  const btn = $("#tsCopy");
+  btn.textContent = "Copied!";
+  setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+});
+
+async function sendText() {
+  const text = textArea.value;
+  if (!text || state.pairedIds.size === 0) return;
+  try {
+    const res = await apiFetch("/api/send-text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    const data = await res.json();
+    const n = data.sent || 0;
+    tsStatus.textContent = n > 0 ? ("Sent to " + n + " device" + (n > 1 ? "s" : "") + " ✓") : "No devices online";
+    tsStatus.className = n > 0 ? "ts-status sent" : "ts-status";
+    setTimeout(() => { if (tsStatus.className.includes("sent")) updateTextHint(); }, 2000);
+  } catch {}
+}
+
+async function pollReceivedText() {
+  try {
+    const res = await apiFetch("/api/received-text?since=" + lastTextTs);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.ts && data.ts > lastTextTs) {
+      lastTextTs = data.ts;
+      if (!textIsLocal && document.activeElement !== textArea) {
+        textArea.value = data.text;
+      }
+      tsStatus.textContent = "From " + data.from;
+      tsStatus.className = "ts-status recv";
+      setTimeout(() => { if (tsStatus.className.includes("recv")) updateTextHint(); }, 3000);
+      try { await navigator.clipboard.writeText(data.text); } catch {}
+    }
+  } catch {}
+  textIsLocal = false;
+}
+setInterval(pollReceivedText, 800);
 </script>
 </body>
 </html>
