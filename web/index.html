@@ -88,6 +88,8 @@
   .file .cancel:hover { color: var(--err); }
   .file .retry { color: var(--accent); font-size: 10px; font-weight: 600; padding: 2px 7px; border: 1px solid var(--accent); border-radius: 5px; cursor: pointer; white-space: nowrap; }
   .file .retry:hover { background: var(--accent); color: #fff; }
+  .file .pause { color: var(--muted); font-size: 10px; font-weight: 600; padding: 2px 7px; border: 1px solid var(--border); border-radius: 5px; cursor: pointer; white-space: nowrap; }
+  .file .pause:hover { border-color: var(--muted); color: var(--text); }
   .file .accept { color: var(--ok); font-size: 10px; font-weight: 600; padding: 2px 7px; border: 1px solid var(--ok); border-radius: 5px; cursor: pointer; white-space: nowrap; }
   .file .accept:hover { background: var(--ok); color: #fff; }
   .file .reject { color: var(--err); font-size: 10px; font-weight: 600; padding: 2px 7px; border: 1px solid var(--err); border-radius: 5px; cursor: pointer; white-space: nowrap; }
@@ -345,7 +347,7 @@ async function pickFiles() {
 const rates = {}; // transfer id -> {sent, t} for speed calc
 
 function fileRow(opts) {
-  const { name, size, pct, status, label, sub, cancelId, retryId, showFolder, pendingId } = opts;
+  const { name, size, pct, status, label, sub, cancelId, retryId, showFolder, pendingId, pauseId, resumeId } = opts;
   const row = document.createElement("div");
   row.className = "file " + (status || "");
   row.innerHTML = `<div class="meta">
@@ -356,6 +358,8 @@ function fileRow(opts) {
     <div class="pct">${label}</div>` +
     (pendingId ? `<div class="accept">Accept</div><div class="reject">Reject</div>` : "") +
     (retryId ? `<div class="retry">Retry</div>` : "") +
+    (pauseId ? `<div class="pause">Pause</div>` : "") +
+    (resumeId ? `<div class="pause">Resume</div>` : "") +
     (showFolder ? `<span class="openfolder" title="Open folder"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>` : "") +
     (cancelId ? `<div class="cancel" title="Cancel">×</div>` : "");
   if (pendingId) {
@@ -363,6 +367,8 @@ function fileRow(opts) {
     row.querySelector(".reject").onclick = () => respondTransfer(pendingId, false);
   }
   if (retryId) row.querySelector(".retry").onclick = () => retryTransfer(retryId);
+  if (pauseId) row.querySelector(".pause").onclick = () => pauseTransfer(pauseId);
+  if (resumeId) row.querySelector(".pause").onclick = () => resumeTransfer(resumeId);
   if (cancelId) row.querySelector(".cancel").onclick = () => cancelTransfer(cancelId);
   if (showFolder) row.querySelector(".openfolder").onclick = () => openFolder();
   return row;
@@ -381,21 +387,27 @@ function renderQueue() {
     const sending = t.status === "sending";
     const pending = t.status === "pending";
     const recv = t.dir === "recv";
+    const paused = t.status === "paused";
+    const active = sending || paused;
     const label = pending ? "Pending"
+      : paused ? "Paused"
       : t.status === "done" ? (recv ? "Received" : "Sent")
       : t.status === "error" ? "Failed" : t.status === "canceled" ? "Canceled" : pct + "%";
     let sub = (recv ? "↓ from " : "↑ to ") + escapeHtml(t.peer || "");
     if (pending) { sub += " · " + fmtSize(t.size) + " · waiting for approval"; }
-    else if (sending) { sub += " · " + fmtSize(t.sent) + " / " + fmtSize(t.size); }
+    else if (active) { sub += " · " + fmtSize(t.sent) + " / " + fmtSize(t.size); }
     else { sub += " · " + fmtSize(t.size); }
     if (sending && t.rate) sub += " · " + fmtSize(t.rate) + "/s";
+    if (paused) sub += " · paused";
     q.appendChild(fileRow({
       name: t.name, size: t.size, pct, sub, label,
       status: pending ? "" : t.status === "error" ? "err" : t.status === "done" ? "done" : t.status === "canceled" ? "err" : "",
-      cancelId: (sending && !recv) ? t.id : null,
+      cancelId: (active && !recv) ? t.id : null,
       retryId: t.retryable ? t.id : null,
       showFolder: t.status === "done",
-      pendingId: pending ? t.id : null
+      pendingId: pending ? t.id : null,
+      pauseId: (sending && !recv) ? t.id : null,
+      resumeId: (paused && !recv) ? t.id : null
     }));
   }
   // Then files staged but not yet sent.
@@ -409,6 +421,14 @@ async function respondTransfer(id, accept) {
 
 async function cancelTransfer(id) {
   try { await apiFetch("/api/transfers/cancel?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
+}
+
+async function pauseTransfer(id) {
+  try { await apiFetch("/api/transfers/pause?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
+}
+
+async function resumeTransfer(id) {
+  try { await apiFetch("/api/transfers/resume?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
 }
 
 async function retryTransfer(id) {
@@ -658,7 +678,7 @@ setInterval(pollDevices, 2000);
 // Adaptive polling: fast (700ms) during active transfers, slow (3s) when idle.
 let transferPollTimer = setInterval(pollTransfers, 3000);
 function scheduleTransferPoll() {
-  const hasActive = state.transfers.some(t => t.status === "sending");
+  const hasActive = state.transfers.some(t => t.status === "sending" || t.status === "paused");
   const interval = hasActive ? 700 : 3000;
   if (transferPollTimer._interval !== interval) {
     clearInterval(transferPollTimer);
