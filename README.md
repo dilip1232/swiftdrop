@@ -24,6 +24,9 @@ files land in `Downloads\SwiftDrop\`.
 - **Drag-and-drop** — drop files directly onto the window
 - **LAN subnet scan** — fallback discovery for networks where mDNS is unavailable (common on Windows)
 - **System tray** — app lives in the system tray; click the icon to show/hide the window
+- **Per-device chat** — chat with individual paired devices; SVG icons, animated panel, unread indicator
+- **Receiver consent** — accept/reject incoming transfers before they are written
+- **Pause/resume transfers** — pause and resume in-flight transfers from the UI; remote peer sees paused state
 
 ## Architecture
 
