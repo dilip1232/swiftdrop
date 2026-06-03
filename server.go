@@ -32,6 +32,10 @@ type Server struct {
 	Pick func() ([]string, error)
 	// OnQuit quits the app; injected by the platform shell.
 	OnQuit func()
+	// ConsentHook is called (in a goroutine) when a pending transfer needs
+	// user consent.  The hook should present an Accept/Reject UI and signal
+	// tr.Decision with the result.  Nil = rely on the web UI only.
+	ConsentHook func(tr *Transfer, from, name string, size int64)
 
 	// WebFS is the embedded web UI filesystem (should contain "web" dir).
 	WebFS fs.FS
@@ -268,6 +272,9 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	// ── Receiver consent: block until the user accepts or 60s timeout ──
 	tr := s.Trk.StartPending(name, trackSize, from)
 	Notify("SwiftDrop", fmt.Sprintf("%s wants to send %s (%s)", from, name, HumanSize(trackSize)))
+	if s.ConsentHook != nil {
+		go s.ConsentHook(tr, from, name, trackSize)
+	}
 	select {
 	case accepted := <-tr.Decision:
 		if !accepted {
