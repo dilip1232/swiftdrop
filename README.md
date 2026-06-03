@@ -15,6 +15,9 @@ API — platform shells only add native UI wiring and system integration.
 - **Cancel support** — in-flight sends can be canceled via API; the HTTP connection is closed immediately
 - **Retry support** — failed/canceled outbound sends can be retried; file path and peer ID are preserved on the transfer
 - **No file size cap** — transfers of any size work; no buffering, no temp files
+- **Receiver consent** — incoming transfers require explicit accept/reject via `ConsentHook`; the remote peer is notified of the decision
+- **Pause/resume** — in-flight transfers can be paused and resumed; the remote peer is signaled so its UI reflects the paused state
+- **HMAC authentication** — `/inbox` requests from paired devices include an HMAC signature; receiver verifies authenticity before writing
 
 ### Device Discovery
 - **mDNS** — registers and browses `_swiftdrop._tcp` via `libp2p/zeroconf/v2` for automatic zero-config discovery
@@ -27,8 +30,13 @@ API — platform shells only add native UI wiring and system integration.
 - **PIN-based pairing** — 6-digit PIN exchange; both devices derive a shared AES-256 key
 - **QR code pairing** — one device generates a QR code containing a one-time token; the other scans it to pair instantly
 - **Bilateral unpairing** — unpairing on one device notifies the remote peer to also unpair
-- **Persistent key store** — paired keys are stored on disk (`~/.swiftdrop/pairs.json`) and survive restarts
+- **Persistent key store** — paired keys stored on disk (macOS: Keychain via `security` CLI; other platforms: `~/.swiftdrop/pairs.json`)
 - **API token protection** — all UI-facing `/api/*` endpoints require a per-session token; only the embedded UI (loopback) can obtain it
+
+### Chat
+- **Per-device chat** — send and receive text messages with individual paired peers
+- **In-memory history** — messages are kept per-peer in memory; UI polls for new messages
+- **Notification hook** — incoming messages trigger a notification flag so the UI can alert the user
 
 ### Transfer Tracking
 - **Live progress** — atomic byte counters updated during streaming; UI polls for real-time progress bars
@@ -97,6 +105,9 @@ All endpoints are served on port **53317** TCP.
 | `diskfree_windows.go` | Windows disk space check via `GetDiskFreeSpaceExW` |
 | `openfolder_darwin.go` | macOS `open` command |
 | `openfolder_windows.go` | Windows `explorer.exe` |
+| `text.go` | Per-peer chat: message store, send/receive, notification flag |
+| `keystore_darwin.go` | macOS Keychain key storage via `security` CLI |
+| `keystore_other.go` | File-based key storage for non-macOS platforms |
 | `icon.go` | Runtime-generated tray icon |
 
 ## Usage
