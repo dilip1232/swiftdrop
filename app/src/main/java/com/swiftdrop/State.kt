@@ -62,10 +62,10 @@ object State {
     private var seq = 0L
     @Volatile var foregroundActivity: Activity? = null
 
-    // Text sharing buffer (latest received text)
-    @Volatile var recvText: String = ""
-    @Volatile var recvTextFrom: String = ""
-    @Volatile var recvTextTs: Long = 0
+    // Per-peer chat store
+    val chatStore = ChatStore()
+    @Volatile var chatNotifyPeer: String? = null
+    @Volatile var chatNotifyName: String? = null
 
     fun newPendingTransfer(name: String, size: Long, peer: String): Transfer {
         val t = Transfer("${System.currentTimeMillis()}-${++seq}", name, size, peer, "recv")

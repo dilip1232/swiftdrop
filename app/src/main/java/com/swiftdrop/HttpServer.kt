@@ -45,9 +45,11 @@ class HttpServer : NanoHTTPD(State.PORT) {
             uri == "/api/transfers/reject" -> withToken(session) { handleAcceptReject(session, false) }
             uri == "/api/send-path" && session.method == Method.POST -> withToken(session) { handleSend(session) }
             uri == "/transfer-signal" && session.method == Method.POST -> handleTransferSignal(session)
-            uri == "/text-inbox" && session.method == Method.POST -> handleTextInbox(session)
-            uri == "/api/send-text" && session.method == Method.POST -> withToken(session) { handleSendText(session) }
-            uri == "/api/received-text" -> withToken(session) { handleReceivedText(session) }
+            uri == "/chat-inbox" && session.method == Method.POST -> handleChatInbox(session)
+            uri == "/api/chat/send" && session.method == Method.POST -> withToken(session) { handleChatSend(session) }
+            uri == "/api/chat/messages" -> withToken(session) { handleChatMessages(session) }
+            uri == "/api/chat/notify" -> withToken(session) { handleChatNotify() }
+            uri == "/api/chat/notify/ack" -> withToken(session) { handleChatNotifyAck() }
             uri == "/api/peers/add" && session.method == Method.POST -> handleAddPeer(session) // public — peers announce themselves
             uri == "/api/peers/remove" && session.method == Method.POST -> withToken(session) { handleRemovePeer(session) }
             // Pairing
@@ -411,64 +413,69 @@ class HttpServer : NanoHTTPD(State.PORT) {
         } catch (_: Exception) { /* best-effort */ }
     }
 
-    // ---- Text sharing ----
+    // ---- Chat ----
 
-    private fun handleTextInbox(session: IHTTPSession): Response {
+    private fun handleChatInbox(session: IHTTPSession): Response {
         val map = HashMap<String, String>()
         session.parseBody(map)
         val body = JSONObject(map["postData"] ?: "{}")
         val text = body.optString("text", "")
         val from = body.optString("from", "Unknown")
-        if (text.isEmpty())
+        val fromId = body.optString("fromId", "")
+        if (text.isEmpty() || fromId.isEmpty())
             return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "bad request")
-        State.recvText = text; State.recvTextFrom = from; State.recvTextTs = System.currentTimeMillis()
-        // Copy to clipboard
-        val act = State.foregroundActivity
-        if (act != null) {
-            act.runOnUiThread {
-                val cm = act.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("SwiftDrop", text))
-            }
-        }
-        // Show notification
+        State.chatStore.add(fromId, ChatMsg(text = text, from = from, dir = "recv"))
+        State.chatNotifyPeer = fromId
+        State.chatNotifyName = from
         val snippet = if (text.length > 80) text.take(80) + "…" else text
-        Notifier.show(State.appContext, "Text from $from: $snippet")
+        Notifier.show(State.appContext, "Message from $from: $snippet")
         return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "ok")
     }
 
-    private fun handleSendText(session: IHTTPSession): Response {
+    private fun handleChatSend(session: IHTTPSession): Response {
         val map = HashMap<String, String>()
         session.parseBody(map)
         val body = JSONObject(map["postData"] ?: "{}")
+        val peerId = body.optString("peer", "")
         val text = body.optString("text", "")
-        if (text.isEmpty())
+        if (peerId.isEmpty() || text.isEmpty())
             return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "bad request")
-        // Broadcast to every paired & reachable peer.
-        var sent = 0
-        for (id in PairStore.pairedIDs()) {
-            val peer = State.peer(id) ?: continue
-            sent++
-            Thread {
-                try {
-                    val url = java.net.URL("http://${peer.host}/text-inbox")
-                    val conn = url.openConnection() as java.net.HttpURLConnection
-                    conn.requestMethod = "POST"; conn.connectTimeout = 5000; conn.readTimeout = 5000
-                    conn.setRequestProperty("Content-Type", "application/json"); conn.doOutput = true
-                    val payload = JSONObject().put("from", State.deviceName).put("text", text).toString()
-                    conn.outputStream.use { it.write(payload.toByteArray()) }
-                    conn.responseCode; conn.disconnect()
-                } catch (_: Exception) {}
-            }.start()
-        }
-        return json("""{"ok":true,"sent":$sent}""")
+        val peer = State.peer(peerId)
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "peer not found")
+        val msg = State.chatStore.add(peerId, ChatMsg(text = text, from = State.deviceName, dir = "sent"))
+        Thread {
+            try {
+                val url = java.net.URL("http://${peer.host}/chat-inbox")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"; conn.connectTimeout = 5000; conn.readTimeout = 5000
+                conn.setRequestProperty("Content-Type", "application/json"); conn.doOutput = true
+                val payload = JSONObject().put("from", State.deviceName).put("fromId", State.deviceId).put("text", text).toString()
+                conn.outputStream.use { it.write(payload.toByteArray()) }
+                conn.responseCode; conn.disconnect()
+            } catch (_: Exception) {}
+        }.start()
+        return json("""{"ok":true,"id":"${msg.id}"}""")
     }
 
-    private fun handleReceivedText(session: IHTTPSession): Response {
+    private fun handleChatMessages(session: IHTTPSession): Response {
+        val peerId = session.parms["peer"] ?: ""
         val since = session.parms["since"]?.toLongOrNull() ?: 0L
-        if (State.recvTextTs > since) {
-            return json(JSONObject().put("text", State.recvText).put("from", State.recvTextFrom).put("ts", State.recvTextTs).toString())
+        val msgs = State.chatStore.since(peerId, since)
+        val arr = JSONArray()
+        for (m in msgs) {
+            arr.put(JSONObject().put("id", m.id).put("text", m.text).put("from", m.from).put("dir", m.dir).put("ts", m.ts))
         }
-        return json("""{"ts":0}""")
+        return json(arr.toString())
+    }
+
+    private fun handleChatNotify(): Response {
+        return json(JSONObject().put("peer", State.chatNotifyPeer ?: "").put("name", State.chatNotifyName ?: "").toString())
+    }
+
+    private fun handleChatNotifyAck(): Response {
+        State.chatNotifyPeer = null
+        State.chatNotifyName = null
+        return json("""{"ok":true}""")
     }
 
     private fun transfersJson(): String {
