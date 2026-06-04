@@ -139,76 +139,97 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 	trk.Finish(tr, err)
 }
 
-// SendFolderByPath zips a directory on-the-fly and streams the zip to the peer
-// as a single transfer. The receiver detects X-Folder and auto-unzips.
+// SendFolderByPath zips a directory to a temp file, then streams it to the peer.
+// Using a temp file gives us a known content-length, which avoids chunked
+// transfer encoding that NanoHTTPD (Android) doesn't decode transparently.
 func SendFolderByPath(peer Peer, self Identity, dirPath string, trk *Tracker) {
 	name := filepath.Base(dirPath)
-	totalSize, fileCount := dirStats(dirPath)
+	_, fileCount := dirStats(dirPath)
 	if fileCount == 0 {
 		trk.Finish(trk.Start(name, 0, peer.Name, "send"), fmt.Errorf("empty folder"))
 		return
 	}
 
-	tr := trk.Start(name, totalSize, peer.Name, "send")
+	// ── Phase 1: zip to temp file ──
+	tmp, err := os.CreateTemp("", "swiftdrop-folder-*.zip")
+	if err != nil {
+		tr := trk.Start("📁 "+name, 0, peer.Name, "send")
+		trk.Finish(tr, fmt.Errorf("create temp: %w", err))
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	zw := zip.NewWriter(tmp)
+	walkErr := filepath.Walk(dirPath, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(filepath.Dir(dirPath), path)
+		rel = filepath.ToSlash(rel)
+		if fi.IsDir() {
+			_, err := zw.Create(rel + "/")
+			return err
+		}
+		w, err := zw.Create(rel)
+		if err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(w, f)
+		return err
+	})
+	zw.Close()
+	tmp.Close()
+	if walkErr != nil {
+		tr := trk.Start("📁 "+name, 0, peer.Name, "send")
+		trk.Finish(tr, walkErr)
+		return
+	}
+
+	zipInfo, err := os.Stat(tmpPath)
+	if err != nil {
+		tr := trk.Start("📁 "+name, 0, peer.Name, "send")
+		trk.Finish(tr, err)
+		return
+	}
+	zipSize := zipInfo.Size()
+
+	// ── Phase 2: send the temp zip file with known content-length ──
+	tr := trk.Start("📁 "+name, zipSize, peer.Name, "send")
 	tr.FilePath = dirPath
 	tr.PeerID = peer.ID
 	ctx, cancel := context.WithCancel(context.Background())
 	trk.SetCancel(tr, cancel)
 	defer cancel()
 
-	// Pipe: zip writer → reader. The zip is streamed, no temp file.
-	pr, pw := io.Pipe()
-	go func() {
-		zw := zip.NewWriter(pw)
-		err := filepath.Walk(dirPath, func(path string, fi os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			// Relative path inside the zip preserves folder structure.
-			rel, _ := filepath.Rel(filepath.Dir(dirPath), path)
-			rel = filepath.ToSlash(rel)
-			if fi.IsDir() {
-				_, err := zw.Create(rel + "/")
-				return err
-			}
-			w, err := zw.Create(rel)
-			if err != nil {
-				return err
-			}
-			f, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			_, err = io.Copy(w, &CountingReader{R: f, Tr: tr})
-			return err
-		})
-		if err != nil {
-			zw.Close()
-			pw.CloseWithError(err)
-			return
-		}
-		pw.CloseWithError(zw.Close())
-	}()
+	zipFile, err := os.Open(tmpPath)
+	if err != nil {
+		trk.Finish(tr, err)
+		return
+	}
+	defer zipFile.Close()
 
 	key := Pairs.IsPaired(peer.ID)
-	var err error
 	if key != nil {
-		// Encrypted: zip stream → encrypt → send.
-		encPr, encPw := io.Pipe()
+		pr, pw := io.Pipe()
 		go func() {
-			encPw.CloseWithError(EncryptStream(encPw, pr, key))
+			pw.CloseWithError(EncryptStream(pw, &CountingReader{R: zipFile, Tr: tr}, key))
 		}()
-		err = SendToPeerWithOpts(ctx, peer, self, name, encPr, -1, totalSize, true, "", true)
+		err = SendToPeerWithOpts(ctx, peer, self, name, pr, EncryptedSize(zipSize), zipSize, true, "", true)
 	} else {
-		err = SendToPeerWithOpts(ctx, peer, self, name, pr, -1, totalSize, false, "", true)
+		err = SendToPeerWithOpts(ctx, peer, self, name, &CountingReader{R: zipFile, Tr: tr}, zipSize, zipSize, false, "", true)
 	}
 
 	if err != nil {
 		log.Printf("sendFolderByPath %q to %s FAILED: %v", name, peer.Name, err)
 	} else {
-		log.Printf("sendFolderByPath %q (%d files, %s) to %s OK", name, fileCount, HumanSize(totalSize), peer.Name)
-		Notify("SwiftDrop", fmt.Sprintf("Sent folder %s (%d files, %s) to %s", name, fileCount, HumanSize(totalSize), peer.Name))
+		log.Printf("sendFolderByPath %q (%d files, %s zip) to %s OK", name, fileCount, HumanSize(zipSize), peer.Name)
+		Notify("SwiftDrop", fmt.Sprintf("Sent folder %s (%d files) to %s", name, fileCount, peer.Name))
 	}
 	trk.Finish(tr, err)
 }
