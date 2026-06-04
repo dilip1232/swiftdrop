@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.util.Log
 import android.webkit.JavascriptInterface
@@ -32,6 +33,14 @@ class MainActivity : AppCompatActivity() {
     private val pickFiles =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             if (!uris.isNullOrEmpty()) stageUris(uris)
+        }
+
+    private val pickFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
+            if (treeUri != null) {
+                val uris = walkTree(treeUri)
+                if (uris.isNotEmpty()) stageUris(uris)
+            }
         }
 
     private val askNotify =
@@ -248,10 +257,45 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript(js, null)
     }
 
+    /** Recursively collect all file URIs under a document tree. */
+    private fun walkTree(treeUri: Uri): List<Uri> {
+        val result = mutableListOf<Uri>()
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeUri, DocumentsContract.getTreeDocumentId(treeUri)
+        )
+        walkChildren(treeUri, childrenUri, result)
+        return result
+    }
+
+    private fun walkChildren(treeUri: Uri, childrenUri: Uri, out: MutableList<Uri>) {
+        contentResolver.query(childrenUri, arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        ), null, null, null)?.use { c ->
+            val idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val mimeIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            while (c.moveToNext()) {
+                val docId = c.getString(idIdx)
+                val mime = c.getString(mimeIdx)
+                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    val subChildren = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+                    walkChildren(treeUri, subChildren, out)
+                } else {
+                    out.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, docId))
+                }
+            }
+        }
+    }
+
     inner class Bridge {
         @JavascriptInterface
         fun pickFiles() {
             runOnUiThread { pickFiles.launch(arrayOf("*/*")) }
+        }
+
+        @JavascriptInterface
+        fun pickFolder() {
+            runOnUiThread { pickFolder.launch(null) }
         }
 
         @JavascriptInterface

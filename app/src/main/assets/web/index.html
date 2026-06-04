@@ -150,6 +150,7 @@
     <p><b>Tap to choose files</b></p>
     <p style="font-size:12px" id="hint">Pick a device above first</p>
   </div>
+  <button class="ghost" id="folderBtn" style="width:100%;margin-bottom:8px;font-size:12px;padding:9px 12px">📁 Pick Folder</button>
   <div id="queue"></div>
   <div class="actions">
     <button id="sendBtn" disabled>Send</button>
@@ -296,6 +297,9 @@ window.swiftdropOnDrop = infos => {
 
 function pickFiles() {
   if (window.AndroidBridge && AndroidBridge.pickFiles) AndroidBridge.pickFiles();
+}
+function pickFolder() {
+  if (window.AndroidBridge && AndroidBridge.pickFolder) AndroidBridge.pickFolder();
 }
 
 const rates = {}; // transfer id -> {sent, t} for speed calc
@@ -592,6 +596,7 @@ $("#pinInput").addEventListener("keydown", e => { if (e.key === "Enter") pairSub
 $("#addBtn").addEventListener("click", addPeer);
 $("#hostInput").addEventListener("keydown", e => { if (e.key === "Enter") addPeer(); });
 $("#chooser").addEventListener("click", pickFiles);
+$("#folderBtn").addEventListener("click", pickFolder);
 $("#sendBtn").addEventListener("click", sendAll);
 $("#clearBtn").addEventListener("click", async () => {
   state.staged = [];
