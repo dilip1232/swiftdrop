@@ -27,7 +27,10 @@ files land in `~/Downloads/SwiftDrop/`.
 - **Drag-and-drop** — drop files directly onto the drawer
 - **LAN subnet scan** — fallback discovery for networks where mDNS is unavailable
 - **Per-device chat** — chat with individual paired devices; SVG icons, animated panel, unread indicator
-- **Receiver consent** — accept/reject dialog (native NSAlert) before incoming transfers are written
+- **Folder transfer** — send entire folders; files stream in parallel and the directory structure is preserved on the receiver
+- **Partial transfer status** — cancelled folder transfers show exactly how many files were received
+- **Duplicate name protection** — folders and files with existing names get a unique suffix instead of overwriting
+- **Receiver consent** — accept/reject dialog (native NSAlert) that stays visible even when notifications arrive
 - **Pause/resume transfers** — pause and resume in-flight transfers from the UI; remote peer sees paused state
 - **Adaptive polling** — fast polling during active transfers, slow when idle
 
