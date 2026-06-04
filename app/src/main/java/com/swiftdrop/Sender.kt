@@ -74,7 +74,7 @@ object Sender {
                 setRequestProperty("X-From", State.deviceName)
                 setRequestProperty("X-From-ID", State.deviceId)
                 if (size > 0) setRequestProperty("X-File-Size", size.toString())
-                if (encrypted) setRequestProperty("X-Encrypted", "aes-gcm")
+                if (encrypted) setRequestProperty("X-Encrypted", "aes-gcm-v2")
                 // HMAC sender authentication.
                 if (key != null) {
                     val ts = (System.currentTimeMillis() / 1000).toString()

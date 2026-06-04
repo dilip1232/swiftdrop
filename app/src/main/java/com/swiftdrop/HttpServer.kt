@@ -68,12 +68,9 @@ class HttpServer : NanoHTTPD(State.PORT) {
                 }
                 json("""{"ok":true}""")
             }
-            uri == "/api/pair/remote-unpair" -> {
-                val id = session.parameters["id"]?.firstOrNull() ?: ""
-                if (id.isNotEmpty()) PairStore.unpair(id)
-                json("""{"ok":true}""")
-            }
+            uri == "/api/pair/remote-unpair" -> handleRemoteUnpair(session)
             uri == "/api/pair/claim" && session.method == Method.POST -> handlePairClaim(session)
+            uri == "/api/pair/pake-confirm" && session.method == Method.POST -> handlePAKEConfirm(session)
             // QR-based pairing
             uri == "/api/pair/qr-begin" -> withToken(session) { handleQRBegin() }
             uri == "/api/pair/qr-claim" && session.method == Method.POST -> handleQRClaim(session)
@@ -93,7 +90,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
     }
 
     private fun withToken(session: IHTTPSession, block: () -> Response): Response {
-        val tok = session.headers["x-api-token"] ?: session.parameters["token"]?.firstOrNull() ?: ""
+        val tok = session.headers["x-api-token"] ?: ""
         if (tok != State.apiToken) {
             return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "unauthorized")
         }
@@ -114,32 +111,37 @@ class HttpServer : NanoHTTPD(State.PORT) {
             return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "not paired — pair first")
         }
 
-        // Verify HMAC sender authentication to prevent X-From-ID spoofing.
+        // Verify HMAC sender authentication — mandatory for paired senders.
         val authHMAC = session.headers["x-auth-hmac"]
-        if (!authHMAC.isNullOrEmpty()) {
-            val authTime = session.headers["x-auth-time"] ?: ""
-            val ts = authTime.toLongOrNull() ?: 0L
-            val delta = kotlin.math.abs(System.currentTimeMillis() / 1000 - ts)
-            if (delta > 300) {
-                return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "auth timestamp expired")
-            }
-            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
-            mac.init(javax.crypto.spec.SecretKeySpec(pairKey, "HmacSHA256"))
-            val expected = mac.doFinal("$fromID|$name|$authTime".toByteArray()).joinToString("") { "%02x".format(it) }
-            if (authHMAC != expected) {
-                return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "authentication failed")
-            }
+        if (authHMAC.isNullOrEmpty()) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "HMAC authentication required")
+        }
+        val authTime = session.headers["x-auth-time"] ?: ""
+        val ts = authTime.toLongOrNull() ?: 0L
+        val delta = kotlin.math.abs(System.currentTimeMillis() / 1000 - ts)
+        if (delta > 300) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "auth timestamp expired")
+        }
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(pairKey, "HmacSHA256"))
+        val expected = mac.doFinal("$fromID|$name|$authTime".toByteArray()).joinToString("") { "%02x".format(it) }
+        if (authHMAC != expected) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "authentication failed")
         }
 
-        // Check free disk space using original file size.
+        // Check free disk space using original file size (require positive size).
         val originalSize = session.headers["x-file-size"]?.toLongOrNull() ?: len
         val checkSize = if (originalSize > 0) originalSize else len
-        if (checkSize > 0) {
-            val stat = android.os.StatFs(android.os.Environment.getExternalStorageDirectory().path)
-            val free = stat.availableBytes
-            if (checkSize > free - 100 * 1024 * 1024) {
-                return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "not enough disk space")
-            }
+        if (checkSize <= 0) {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "X-File-Size or Content-Length required")
+        }
+        val stat = android.os.StatFs(android.os.Environment.getExternalStorageDirectory().path)
+        val free = stat.availableBytes
+        val headroom = 100L * 1024 * 1024
+        // Saturating add to prevent overflow.
+        val needed = if (checkSize > Long.MAX_VALUE - headroom) Long.MAX_VALUE else checkSize + headroom
+        if (needed > free) {
+            return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "not enough disk space")
         }
 
         // Encrypted transfers are chunked (no Content-Length), so use
@@ -179,7 +181,8 @@ class HttpServer : NanoHTTPD(State.PORT) {
         val dest: Uri = cr.insert(collection, values)
             ?: return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "insert failed")
 
-        val encrypted = session.headers["x-encrypted"] == "aes-gcm"
+        val encHdr = session.headers["x-encrypted"] ?: ""
+        val encrypted = encHdr == "aes-gcm-v2" || encHdr == "aes-gcm"
         val senderId = session.headers["x-from-id"] ?: ""
 
         // Hash on-the-fly so we never re-read the file from disk.
@@ -199,7 +202,11 @@ class HttpServer : NanoHTTPD(State.PORT) {
                         override fun write(b: ByteArray, off: Int, len: Int) { buffered.write(b, off, len); md.update(b, off, len); tr.sent.addAndGet(len.toLong()) }
                         override fun flush() = buffered.flush()
                     }
-                    Crypto.decryptStream(counting, input, key)
+                    if (encHdr == "aes-gcm-v2") {
+                        Crypto.decryptStream(counting, input, key)
+                    } else {
+                        Crypto.decryptStreamV1(counting, input, key)
+                    }
                     buffered.flush()
                 } else {
                     val buffered = java.io.BufferedOutputStream(rawOut, 256 * 1024)
@@ -424,6 +431,9 @@ class HttpServer : NanoHTTPD(State.PORT) {
         val fromId = body.optString("fromId", "")
         if (text.isEmpty() || fromId.isEmpty())
             return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "bad request")
+        // Reject chat from unpaired senders to prevent spoofing.
+        if (PairStore.isPaired(fromId) == null)
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "not paired")
         State.chatStore.add(fromId, ChatMsg(text = text, from = from, dir = "recv"))
         State.chatNotifyPeer = fromId
         State.chatNotifyName = from
@@ -572,16 +582,17 @@ class HttpServer : NanoHTTPD(State.PORT) {
         val peer = State.peer(deviceId)
             ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "unknown device")
 
-        // POST PIN to remote peer's /api/pair/claim
-        val payload = JSONObject().apply {
-            put("pin", pin); put("id", State.deviceId); put("name", State.deviceName)
+        // SPAKE2 PAKE: PIN never crosses the wire.
+        val spakeState = Spake2.clientStart(pin)
+        val pakePayload = JSONObject().apply {
+            put("pake_msg", bytesToHex(spakeState.msgA))
+            put("id", State.deviceId); put("name", State.deviceName)
         }.toString()
         val conn = (java.net.URL("http://${peer.host}/api/pair/claim").openConnection() as java.net.HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = 5000; readTimeout = 5000
-            setRequestProperty("Content-Type", "application/json")
-            doOutput = true
+            setRequestProperty("Content-Type", "application/json"); doOutput = true
         }
-        conn.outputStream.use { it.write(payload.toByteArray()) }
+        conn.outputStream.use { it.write(pakePayload.toByteArray()) }
         if (conn.responseCode != 200) {
             val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "pairing rejected"
             conn.disconnect()
@@ -589,16 +600,38 @@ class HttpServer : NanoHTTPD(State.PORT) {
         }
         val result = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
         conn.disconnect()
-        val keyHex = result.optString("key")
-        val keyBytes = PairStore.run {
-            val b = ByteArray(keyHex.length / 2)
-            for (i in b.indices) b[i] = ((Character.digit(keyHex[2 * i], 16) shl 4) + Character.digit(keyHex[2 * i + 1], 16)).toByte()
-            b
+        val spakeKey = try {
+            spakeState.finish(hexToBytes(result.optString("pake_msg")), hexToBytes(result.optString("pake_confirm")))
+        } catch (_: Exception) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "wrong PIN")
         }
-        if (keyBytes.size != 32) {
-            return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "invalid key")
+        val keyBytes = try {
+            Spake2.aesGcmUnwrap(spakeKey, hexToBytes(result.optString("encrypted_key")))
+        } catch (_: Exception) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "wrong PIN")
         }
+        if (keyBytes.size != 32)
+            return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "invalid key length")
+
+        // Phase 2: send client confirmation so server knows the PIN was correct.
+        val clientConfirm = Spake2.confirmMac(spakeKey, "client")
+        val confirmPayload = JSONObject().apply {
+            put("id", State.deviceId); put("pake_confirm", bytesToHex(clientConfirm))
+        }.toString()
+        val confirmConn = (java.net.URL("http://${peer.host}/api/pair/pake-confirm").openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "POST"; connectTimeout = 5000; readTimeout = 5000
+            setRequestProperty("Content-Type", "application/json"); doOutput = true
+        }
+        confirmConn.outputStream.use { it.write(confirmPayload.toByteArray()) }
+        if (confirmConn.responseCode != 200) {
+            val err = confirmConn.errorStream?.bufferedReader()?.use { it.readText() } ?: "confirmation failed"
+            confirmConn.disconnect()
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, err)
+        }
+        confirmConn.disconnect()
+
         PairStore.storeKey(deviceId, keyBytes)
+        android.util.Log.i("SwiftDrop", "SPAKE2 paired with ${peer.name} ($deviceId)")
         return json("""{"ok":true}""")
     }
 
@@ -745,10 +778,76 @@ class HttpServer : NanoHTTPD(State.PORT) {
         val body = HashMap<String, String>()
         session.parseBody(body)
         val obj = JSONObject(body["postData"] ?: "{}")
-        val pin = obj.optString("pin")
         val peerId = obj.optString("id")
-        val key = PairStore.claimPIN(pin, peerId)
-            ?: return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "invalid or expired PIN")
-        return json("""{"key":"${PairStore.bytesToHex(key)}"}""")
+        val peerName = obj.optString("name")
+        val pakeMsg = obj.optString("pake_msg")
+        if (pakeMsg.isEmpty())
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "pake_msg required")
+        val pin = PairStore.pendingPIN
+            ?: return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "no pending pairing")
+        if (System.currentTimeMillis() > PairStore.pendingExpiry)
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "pairing expired")
+        val clientMsg = try { hexToBytes(pakeMsg) } catch (_: Exception) {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "invalid pake_msg")
+        }
+        val result = try { Spake2.serverFinish(pin, clientMsg) } catch (e: Exception) {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "SPAKE2 failed: ${e.message}")
+        }
+        val pairKey = PairStore.pendingKey
+            ?: return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "no pending key")
+        val wrapped = Spake2.aesGcmWrap(result.sharedKey, pairKey)
+        // Hold — do NOT commit yet. Wait for client confirmation in Phase 2.
+        PairStore.holdPAKE(peerId, result.sharedKey, pairKey)
+        android.util.Log.i("SwiftDrop", "SPAKE2 exchange with $peerName ($peerId) — awaiting confirmation")
+        return json("""{"pake_msg":"${bytesToHex(result.msgB)}","pake_confirm":"${bytesToHex(result.confirm)}","encrypted_key":"${bytesToHex(wrapped)}"}""")
+    }
+
+    private fun handlePAKEConfirm(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        session.parseBody(body)
+        val obj = JSONObject(body["postData"] ?: "{}")
+        val peerId = obj.optString("id")
+        val confirm = obj.optString("pake_confirm")
+        if (confirm.isEmpty())
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "pake_confirm required")
+        if (!PairStore.confirmPAKE(peerId, hexToBytes(confirm)))
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "wrong PIN or expired")
+        android.util.Log.i("SwiftDrop", "SPAKE2 pairing confirmed for $peerId")
+        return json("""{"ok":true}""")
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val len = hex.length
+        val data = ByteArray(len / 2)
+        for (i in 0 until len step 2) data[i / 2] = ((Character.digit(hex[i], 16) shl 4) + Character.digit(hex[i + 1], 16)).toByte()
+        return data
+    }
+
+    private fun bytesToHex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+
+    private fun handleRemoteUnpair(session: IHTTPSession): Response {
+        val id = session.parameters["id"]?.firstOrNull() ?: ""
+        if (id.isNotEmpty()) {
+            // Verify the caller's IP matches the registered peer to prevent spoofing.
+            val callerIp = normalizeIp(session.remoteIpAddress ?: "")
+            val peer = State.peer(id)
+            if (peer != null) {
+                val peerIp = normalizeIp(peer.host.substringBeforeLast(":"))
+                if (callerIp != peerIp) {
+                    return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "forbidden")
+                }
+            }
+            PairStore.unpair(id)
+        }
+        return json("""{"ok":true}""")
+    }
+
+    /** Strip ::ffff: prefix from IPv6-mapped IPv4 so comparisons work. */
+    private fun normalizeIp(ip: String): String {
+        val stripped = ip.removePrefix("::ffff:")
+        return try {
+            val addr = java.net.InetAddress.getByName(stripped)
+            if (addr is java.net.Inet4Address) addr.hostAddress ?: stripped else stripped
+        } catch (_: Exception) { stripped }
     }
 }
