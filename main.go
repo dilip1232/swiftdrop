@@ -127,12 +127,15 @@ func runApp(port int) {
 		window.ExecJS(fmt.Sprintf("window.swiftdropOnDrop && window.swiftdropOnDrop(%s)", string(data)))
 	})
 
-	// Non-blocking consent: show the window so the user can accept/reject
-	// in the web UI.  The notification is already sent by handleInbox.
-	// This replaces the old blocking NSAlert that froze the app.
+	// Non-blocking consent: pop the window and inject a prominent accept/reject
+	// dialog via JS. The notification is already sent by handleInbox.
 	srv.ConsentHook = func(tr *core.Transfer, from, name string, size int64) {
 		window.Show()
 		window.Focus()
+		js := fmt.Sprintf(
+			`window.showConsentDialog && window.showConsentDialog(%q, %q, %q, %q)`,
+			tr.ID, from, name, core.HumanSize(size))
+		window.ExecJS(js)
 	}
 
 	tray := app.SystemTray.New()

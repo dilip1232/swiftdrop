@@ -77,7 +77,8 @@
   }
   .file:first-child { border-top: none; }
   .file .meta { flex: 1; min-width: 0; }
-  .file .name { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file .name { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+  .ficon { flex-shrink: 0; }
   .file .sub { font-size: 10px; color: var(--muted); }
   .bar { height: 5px; border-radius: 5px; background: var(--border); overflow: hidden; margin-top: 5px; }
   .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .12s; }
@@ -149,6 +150,16 @@
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .toast.err { border-color: var(--err); }
+
+  /* Consent banner */
+  .consent-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; justify-content: center; align-items: flex-start; padding-top: 40px; z-index: 1000; }
+  .consent-overlay.open { display: flex; }
+  .consent-box { background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; width: 290px; max-width: 92vw; box-shadow: 0 12px 40px rgba(0,0,0,.5); text-align: center; }
+  .consent-box h3 { margin: 0 0 4px; font-size: 14px; }
+  .consent-box .csub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .consent-box .cbtn { display: flex; gap: 8px; }
+  .consent-box .cbtn button { flex: 1; }
+  .consent-box .cbtn .rej { background: var(--panel-2); color: var(--err); border: 1px solid var(--err); }
 
   /* Pairing modal */
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; justify-content: center; align-items: center; z-index: 999; }
@@ -224,6 +235,18 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
+
+<!-- Consent overlay for incoming transfers -->
+<div class="consent-overlay" id="consentOverlay">
+  <div class="consent-box">
+    <h3 id="consentTitle">Incoming file</h3>
+    <div class="csub" id="consentSub"></div>
+    <div class="cbtn">
+      <button class="rej" id="consentReject">Reject</button>
+      <button id="consentAccept">Accept</button>
+    </div>
+  </div>
+</div>
 
 <!-- Pairing modal -->
 <div class="modal-overlay" id="pairModal">
@@ -367,12 +390,17 @@ async function pickFiles() {
 
 const rates = {}; // transfer id -> {sent, t} for speed calc
 
+function fileIcon(isFolder) {
+  if (isFolder) return '<svg class="ficon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7EB6FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+  return '<svg class="ficon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7EB6FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+}
+
 function fileRow(opts) {
-  const { name, size, pct, status, label, sub, cancelId, retryId, showFolder, pendingId, pauseId, resumeId } = opts;
+  const { name, size, pct, status, label, sub, cancelId, retryId, showFolder, pendingId, pauseId, resumeId, isFolder } = opts;
   const row = document.createElement("div");
   row.className = "file " + (status || "");
   row.innerHTML = `<div class="meta">
-      <div class="name">${escapeHtml(name)}</div>
+      <div class="name">${fileIcon(isFolder)}${escapeHtml(name)}</div>
       <div class="sub">${sub}</div>
       <div class="bar"><i style="width:${pct}%"></i></div>
     </div>
@@ -423,8 +451,10 @@ function renderQueue() {
     else { sub += " · " + fmtSize(t.size); }
     if (sending && t.rate) sub += " · " + fmtSize(t.rate) + "/s";
     if (paused) sub += " · paused";
+    const tIsFolder = t.name.startsWith("📁 ");
+    const tName = tIsFolder ? t.name.slice(3) : t.name;
     q.appendChild(fileRow({
-      name: t.name, size: t.size, pct, sub, label,
+      name: tName, size: t.size, pct, sub, label, isFolder: tIsFolder,
       status: pending ? "" : t.status === "error" ? "err" : t.status === "done" ? "done" : t.status === "canceled" ? "err" : "",
       cancelId: (active && !recv) ? t.id : null,
       retryId: t.retryable ? t.id : null,
@@ -436,16 +466,27 @@ function renderQueue() {
   }
   // Then files staged but not yet sent.
   for (const f of state.staged) {
-    const icon = f.is_folder ? "📁 " : "";
     const sub = f.is_folder ? `${f.file_count} file${f.file_count !== 1 ? "s" : ""} · ${fmtSize(f.size)}` : fmtSize(f.size);
-    q.appendChild(fileRow({ name: icon + f.name, size: f.size, pct: 0, sub, label: "Ready" }));
+    q.appendChild(fileRow({ name: f.name, size: f.size, pct: 0, sub, label: "Ready", isFolder: f.is_folder }));
   }
 }
 
 async function respondTransfer(id, accept) {
   const ep = accept ? "/api/transfers/accept" : "/api/transfers/reject";
   try { await apiFetch(ep + "?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
+  // Dismiss consent overlay if it was showing for this transfer.
+  const ov = document.getElementById("consentOverlay");
+  if (ov.dataset.tid === id) ov.classList.remove("open");
 }
+
+// Called from Go via ExecJS when an incoming transfer needs consent.
+window.showConsentDialog = function(id, from, name, size) {
+  const ov = document.getElementById("consentOverlay");
+  ov.dataset.tid = id;
+  document.getElementById("consentTitle").textContent = "Incoming from " + from;
+  document.getElementById("consentSub").textContent = name + " · " + size;
+  ov.classList.add("open");
+};
 
 async function cancelTransfer(id) {
   try { await apiFetch("/api/transfers/cancel?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
@@ -524,6 +565,13 @@ async function pollTransfers() {
     }
     state.transfers = data;
     renderQueue();
+    // Auto-dismiss consent overlay if the transfer resolved.
+    const ov = document.getElementById("consentOverlay");
+    if (ov.classList.contains("open")) {
+      const tid = ov.dataset.tid;
+      const tr = data.find(t => t.id === tid);
+      if (!tr || tr.status !== "pending") ov.classList.remove("open");
+    }
   } catch {}
 }
 
@@ -701,6 +749,16 @@ $("#pairGenerate").addEventListener("click", pairGenerate);
 $("#pairEnter").addEventListener("click", pairShowInput);
 $("#pinSubmit").addEventListener("click", pairSubmitPin);
 $("#pinInput").addEventListener("keydown", e => { if (e.key === "Enter") pairSubmitPin(); });
+
+// Consent overlay wiring
+$("#consentAccept").addEventListener("click", () => {
+  const id = document.getElementById("consentOverlay").dataset.tid;
+  if (id) respondTransfer(id, true);
+});
+$("#consentReject").addEventListener("click", () => {
+  const id = document.getElementById("consentOverlay").dataset.tid;
+  if (id) respondTransfer(id, false);
+});
 
 loadMe();
 pollDevices();
