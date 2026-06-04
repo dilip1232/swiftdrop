@@ -30,7 +30,7 @@ API — platform shells only add native UI wiring and system integration.
 - **PIN-based pairing** — 6-digit PIN exchange; both devices derive a shared AES-256 key
 - **QR code pairing** — one device generates a QR code containing a one-time token; the other scans it to pair instantly
 - **Bilateral unpairing** — unpairing on one device notifies the remote peer to also unpair
-- **Persistent key store** — paired keys stored on disk (macOS: Keychain via `security` CLI; other platforms: `~/.swiftdrop/pairs.json`)
+- **Persistent key store** — paired keys stored on disk (macOS: Keychain, Windows: DPAPI, others: `<UserConfigDir>/SwiftDrop/paired-keys.json`)
 - **API token protection** — all UI-facing `/api/*` endpoints require a per-session token; only the embedded UI (loopback) can obtain it
 
 ### Chat
@@ -107,7 +107,8 @@ All endpoints are served on port **53317** TCP.
 | `openfolder_windows.go` | Windows `explorer.exe` |
 | `text.go` | Per-peer chat: message store, send/receive, notification flag |
 | `keystore_darwin.go` | macOS Keychain key storage via `security` CLI |
-| `keystore_other.go` | File-based key storage for non-macOS platforms |
+| `keystore_windows.go` | Windows DPAPI-encrypted key storage |
+| `keystore_other.go` | File-based key storage for Linux/Android |
 | `icon.go` | Runtime-generated tray icon |
 
 ## Usage

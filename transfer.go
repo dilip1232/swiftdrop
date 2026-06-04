@@ -149,7 +149,7 @@ func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename 
 		req.Header.Set("X-File-Size", strconv.FormatInt(originalSize, 10))
 	}
 	if encrypted {
-		req.Header.Set("X-Encrypted", "aes-gcm")
+		req.Header.Set("X-Encrypted", "aes-gcm-v2")
 	}
 	if len(sha256hash) > 0 && sha256hash[0] != "" {
 		req.Header.Set("X-SHA256", sha256hash[0])

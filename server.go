@@ -42,13 +42,16 @@ type Server struct {
 
 	// Chat stores per-peer chat messages in memory.
 	Chat *ChatStore
+
+	// Replays prevents HMAC replay attacks on /inbox.
+	Replays *ReplayCache
 }
 
 // DefaultPort is the LAN port SwiftDrop serves on for peer-to-peer transfers.
 const DefaultPort = 53317
 
 func NewServer(id Identity, reg *PeerRegistry, trk *Tracker) *Server {
-	return &Server{ID: id, Reg: reg, Trk: trk, Chat: NewChatStore()}
+	return &Server{ID: id, Reg: reg, Trk: trk, Chat: NewChatStore(), Replays: NewReplayCache()}
 }
 
 // normalizeIP strips the ::ffff: prefix from IPv6-mapped IPv4 addresses so
@@ -123,28 +126,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Public endpoint: receiving peer is notified by the sender about
 	// pause/resume so its UI can reflect the state.
-	mux.HandleFunc("/transfer-signal", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
-		var body struct {
-			File   string `json:"file"`
-			Action string `json:"action"` // "pause" | "resume"
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.File == "" || body.Action == "" {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		// Identify the sender by X-From-Name header (set by notifyPeerSignal).
-		peerName := r.Header.Get("X-From-Name")
-		if peerName == "" {
-			http.Error(w, "missing X-From-Name", http.StatusBadRequest)
-			return
-		}
-		s.Trk.SignalRecvTransfer(peerName, body.File, body.Action)
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("/transfer-signal", s.handleTransferSignal)
 	mux.HandleFunc("/api/transfers/accept", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
 		if s.Trk.AcceptTransfer(r.URL.Query().Get("id")) {
 			w.WriteHeader(http.StatusOK)
@@ -199,25 +181,9 @@ func (s *Server) Handler() http.Handler {
 	}))
 	// Public endpoint: remote device tells us to unpair them.
 	// Verify the caller's IP matches the registered peer to prevent spoofing.
-	mux.HandleFunc("/api/pair/remote-unpair", func(w http.ResponseWriter, r *http.Request) {
-		id := r.URL.Query().Get("id")
-		if id == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if peer, ok := s.Reg.Get(id); ok {
-			callerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
-			peerIP, _, _ := net.SplitHostPort(peer.Host)
-			if normalizeIP(callerIP) != normalizeIP(peerIP) {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-		}
-		Pairs.Unpair(id)
-		log.Printf("remote-unpair: %s unpaired us", id)
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/api/pair/claim", s.handlePairClaim) // peer presents a PIN (public)
+	mux.HandleFunc("/api/pair/remote-unpair", s.handleRemoteUnpair)
+	mux.HandleFunc("/api/pair/claim", s.handlePairClaim)          // peer presents a PIN (public)
+	mux.HandleFunc("/api/pair/pake-confirm", s.handlePAKEConfirm) // SPAKE2 Phase 2
 
 	// QR-based pairing endpoints.
 	mux.HandleFunc("/api/pair/qr-begin", s.requireToken(s.handleQRBegin)) // UI requests a QR code
@@ -276,26 +242,35 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify HMAC sender authentication to prevent X-From-ID spoofing.
-	if authHMAC := r.Header.Get("X-Auth-HMAC"); authHMAC != "" {
-		authTime := r.Header.Get("X-Auth-Time")
-		ts, _ := strconv.ParseInt(authTime, 10, 64)
-		delta := time.Now().Unix() - ts
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta > 300 { // reject if timestamp > 5 min old
-			http.Error(w, "auth timestamp expired", http.StatusForbidden)
-			return
-		}
-		mac := hmac.New(sha256.New, key)
-		mac.Write([]byte(fromID + "|" + name + "|" + authTime))
-		expected := hex.EncodeToString(mac.Sum(nil))
-		if !hmac.Equal([]byte(authHMAC), []byte(expected)) {
-			log.Printf("inbox HMAC mismatch from %s", fromID)
-			http.Error(w, "authentication failed", http.StatusForbidden)
-			return
-		}
+	// Verify HMAC sender authentication — mandatory for paired senders.
+	authHMAC := r.Header.Get("X-Auth-HMAC")
+	if authHMAC == "" {
+		http.Error(w, "HMAC authentication required", http.StatusForbidden)
+		return
+	}
+	authTime := r.Header.Get("X-Auth-Time")
+	ts, _ := strconv.ParseInt(authTime, 10, 64)
+	delta := time.Now().Unix() - ts
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > 300 { // reject if timestamp > 5 min old
+		http.Error(w, "auth timestamp expired", http.StatusForbidden)
+		return
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(fromID + "|" + name + "|" + authTime))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(authHMAC), []byte(expected)) {
+		log.Printf("inbox HMAC mismatch from %s", fromID)
+		http.Error(w, "authentication failed", http.StatusForbidden)
+		return
+	}
+	// Reject replayed HMAC values.
+	if !s.Replays.Check(authHMAC) {
+		log.Printf("inbox HMAC replay detected from %s", fromID)
+		http.Error(w, "replay detected", http.StatusForbidden)
+		return
 	}
 
 	// Check free disk space before writing (use original file size when encrypted).
@@ -305,12 +280,22 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 			origSize = n
 		}
 	}
+	if origSize <= 0 {
+		http.Error(w, "X-File-Size or Content-Length required", http.StatusBadRequest)
+		return
+	}
 	dlDir := DownloadDir()
-	if origSize > 0 {
-		if free, err := DiskFree(dlDir); err == nil && uint64(origSize)+100<<20 > free {
-			http.Error(w, "not enough disk space", http.StatusInsufficientStorage)
-			return
-		}
+	// Saturating add: 100 MiB headroom, capped at math.MaxUint64.
+	const headroom = 100 << 20
+	needed := uint64(origSize)
+	if needed > (^uint64(0))-headroom {
+		needed = ^uint64(0)
+	} else {
+		needed += headroom
+	}
+	if free, err := DiskFree(dlDir); err == nil && needed > free {
+		http.Error(w, "not enough disk space", http.StatusInsufficientStorage)
+		return
 	}
 
 	// Encrypted transfers are chunked (Content-Length = -1), so use the
@@ -353,7 +338,8 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 
 	// If the sender signals encryption, decrypt using the paired key.
 	var body io.Reader = &CountingReader{R: r.Body, Tr: tr}
-	encrypted := r.Header.Get("X-Encrypted") == "aes-gcm"
+	encHdr := r.Header.Get("X-Encrypted")
+	encrypted := encHdr == "aes-gcm-v2" || encHdr == "aes-gcm"
 	senderID := r.Header.Get("X-From-ID")
 	if encrypted {
 		key := Pairs.IsPaired(senderID)
@@ -364,7 +350,13 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not paired with sender", http.StatusForbidden)
 			return
 		}
-		if err := DecryptStream(f, body, key); err != nil {
+		var decErr error
+		if encHdr == "aes-gcm-v2" {
+			decErr = DecryptStream(f, body, key)
+		} else {
+			decErr = DecryptStreamV1(f, body, key)
+		}
+		if err := decErr; err != nil {
 			s.Trk.Finish(tr, err)
 			f.Close()
 			os.Remove(dest)
@@ -617,9 +609,6 @@ func (s *Server) handlePick(w http.ResponseWriter, r *http.Request) {
 func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tok := r.Header.Get("X-API-Token")
-		if tok == "" {
-			tok = r.URL.Query().Get("token")
-		}
 		if tok != s.ID.APIToken {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -676,11 +665,19 @@ func (s *Server) handlePairSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown device", http.StatusNotFound)
 		return
 	}
-	payload := fmt.Sprintf(`{"pin":%q,"id":%q,"name":%q}`, req.PIN, s.ID.ID, s.ID.Name)
+
+	// SPAKE2 PAKE: PIN never crosses the wire.
+	msgA, spakeState, err := SPAKE2ClientStart(req.PIN)
+	if err != nil {
+		http.Error(w, "SPAKE2 init failed", http.StatusInternalServerError)
+		return
+	}
+	pakePayload := fmt.Sprintf(`{"pake_msg":%q,"id":%q,"name":%q}`,
+		hex.EncodeToString(msgA), s.ID.ID, s.ID.Name)
 	resp, err := TransferClient.Post(
 		fmt.Sprintf("http://%s/api/pair/claim", peer.Host),
 		"application/json",
-		strings.NewReader(payload),
+		strings.NewReader(pakePayload),
 	)
 	if err != nil {
 		http.Error(w, "could not reach peer", http.StatusBadGateway)
@@ -693,19 +690,53 @@ func (s *Server) handlePairSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var result struct {
-		Key string `json:"key"`
+		PAKEMsg      string `json:"pake_msg"`
+		PAKEConfirm  string `json:"pake_confirm"`
+		EncryptedKey string `json:"encrypted_key"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		http.Error(w, "bad response", http.StatusBadGateway)
+		http.Error(w, "bad SPAKE2 response", http.StatusBadGateway)
 		return
 	}
-	keyBytes, err := hex.DecodeString(result.Key)
-	if err != nil || len(keyBytes) != 32 {
-		http.Error(w, "invalid key from peer", http.StatusBadGateway)
+	srvMsg, _ := hex.DecodeString(result.PAKEMsg)
+	srvConfirm, _ := hex.DecodeString(result.PAKEConfirm)
+	spakeKey, err := spakeState.Finish(srvMsg, srvConfirm)
+	if err != nil {
+		http.Error(w, "wrong PIN", http.StatusForbidden)
 		return
 	}
+	wrapped, _ := hex.DecodeString(result.EncryptedKey)
+	keyBytes, err := AESGCMUnwrap(spakeKey, wrapped)
+	if err != nil {
+		http.Error(w, "wrong PIN", http.StatusForbidden)
+		return
+	}
+	if len(keyBytes) != 32 {
+		http.Error(w, "invalid key length from peer", http.StatusBadGateway)
+		return
+	}
+
+	// Phase 2: send client confirmation so server knows the PIN was correct.
+	clientConfirm := spakeConfirm(spakeKey, "client")
+	confirmPayload := fmt.Sprintf(`{"id":%q,"pake_confirm":%q}`, s.ID.ID, hex.EncodeToString(clientConfirm))
+	resp2, err := TransferClient.Post(
+		fmt.Sprintf("http://%s/api/pair/pake-confirm", peer.Host),
+		"application/json",
+		strings.NewReader(confirmPayload),
+	)
+	if err != nil {
+		http.Error(w, "could not reach peer for confirmation", http.StatusBadGateway)
+		return
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		body, _ := io.ReadAll(resp2.Body)
+		http.Error(w, "pairing confirmation failed: "+string(body), resp2.StatusCode)
+		return
+	}
+
 	Pairs.StoreKey(req.DeviceID, keyBytes)
-	log.Printf("paired with %s (%s)", peer.Name, req.DeviceID)
+	log.Printf("SPAKE2 paired with %s (%s)", peer.Name, req.DeviceID)
 	WriteJSON(w, map[string]bool{"ok": true})
 }
 
@@ -715,21 +746,84 @@ func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		PIN  string `json:"pin"`
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		PAKEMsg string `json:"pake_msg"` // SPAKE2 client message (hex)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	key, ok := Pairs.ClaimPIN(req.PIN, req.ID)
-	if !ok {
-		http.Error(w, "invalid or expired PIN", http.StatusForbidden)
+	if req.PAKEMsg == "" {
+		http.Error(w, "pake_msg required", http.StatusBadRequest)
 		return
 	}
-	log.Printf("pairing accepted for %s (%s)", req.Name, req.ID)
-	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
+	clientMsg, err := hex.DecodeString(req.PAKEMsg)
+	if err != nil || len(clientMsg) == 0 {
+		http.Error(w, "invalid pake_msg", http.StatusBadRequest)
+		return
+	}
+	pin := Pairs.PendingPIN()
+	if pin == "" {
+		http.Error(w, "no pending pairing", http.StatusForbidden)
+		return
+	}
+	msgB, confirm, spakeKey, err := SPAKE2ServerFinish(pin, clientMsg)
+	if err != nil {
+		http.Error(w, "SPAKE2 failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Wrap the AES pairing key with the SPAKE2 shared key.
+	pairKey := func() []byte {
+		Pairs.mu.RLock()
+		k := Pairs.pendKey
+		Pairs.mu.RUnlock()
+		return k
+	}()
+	if pairKey == nil {
+		http.Error(w, "no pending key", http.StatusForbidden)
+		return
+	}
+	wrapped, err := AESGCMWrap(spakeKey, pairKey)
+	if err != nil {
+		http.Error(w, "wrap failed", http.StatusInternalServerError)
+		return
+	}
+	// Hold — do NOT commit yet.  Wait for client confirmation in Phase 2.
+	Pairs.HoldPAKE(req.ID, spakeKey, pairKey)
+	log.Printf("SPAKE2 exchange with %s (%s) — awaiting confirmation", req.Name, req.ID)
+	WriteJSON(w, map[string]string{
+		"pake_msg":      hex.EncodeToString(msgB),
+		"pake_confirm":  hex.EncodeToString(confirm),
+		"encrypted_key": hex.EncodeToString(wrapped),
+	})
+}
+
+// handlePAKEConfirm is Phase 2: client proves it derived the correct key.
+func (s *Server) handlePAKEConfirm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		ID          string `json:"id"`
+		PAKEConfirm string `json:"pake_confirm"` // HMAC(key, "client")
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	clientConfirm, err := hex.DecodeString(req.PAKEConfirm)
+	if err != nil || len(clientConfirm) == 0 {
+		http.Error(w, "invalid pake_confirm", http.StatusBadRequest)
+		return
+	}
+	if !Pairs.ConfirmPAKE(req.ID, clientConfirm) {
+		http.Error(w, "wrong PIN or expired", http.StatusForbidden)
+		return
+	}
+	log.Printf("SPAKE2 pairing confirmed for %s", req.ID)
+	WriteJSON(w, map[string]bool{"ok": true})
 }
 
 // ── QR pairing handlers ────────────────────────────────────────────────────
@@ -758,9 +852,10 @@ func (s *Server) handleQRClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Token string `json:"token"`
-		ID    string `json:"id"`
-		Name  string `json:"name"`
+		Token  string `json:"token"`
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		PubKey string `json:"pub_key"` // X25519 public key (hex), empty = legacy
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -772,6 +867,34 @@ func (s *Server) handleQRClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("QR pairing accepted for %s (%s)", req.Name, req.ID)
+	// X25519 key agreement: wrap the AES key.
+	if req.PubKey != "" {
+		claimerPub, err := hex.DecodeString(req.PubKey)
+		if err != nil || len(claimerPub) != 32 {
+			http.Error(w, "invalid public key", http.StatusBadRequest)
+			return
+		}
+		priv, pub, err := X25519KeyPair()
+		if err != nil {
+			http.Error(w, "key generation failed", http.StatusInternalServerError)
+			return
+		}
+		shared, err := X25519SharedSecret(priv, claimerPub)
+		if err != nil {
+			http.Error(w, "key agreement failed", http.StatusInternalServerError)
+			return
+		}
+		wrapped, err := AESGCMWrap(shared, key)
+		if err != nil {
+			http.Error(w, "wrap failed", http.StatusInternalServerError)
+			return
+		}
+		WriteJSON(w, map[string]string{
+			"encrypted_key": hex.EncodeToString(wrapped),
+			"pub_key":       hex.EncodeToString(pub),
+		})
+		return
+	}
 	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
 }
 
@@ -796,9 +919,87 @@ func (s *Server) notifyPeerSignal(peerID, fileName, action string) {
 	}
 }
 
-// StartServer launches the peer-facing HTTP server (inbox + api) on the LAN
-// port. If the preferred port is taken it tries up to 10 nearby ports so the
-// app still starts instead of crashing.
+// LANHandler returns an http.Handler containing ONLY the public, peer-facing
+// routes. Token-protected UI endpoints and the static web UI are excluded so
+// they are never reachable from the LAN — only through the Wails webview
+// (which uses Handler()).
+func (s *Server) LANHandler() http.Handler {
+	mux := http.NewServeMux()
+
+	// Peer-to-peer transfer.
+	mux.HandleFunc("/inbox", s.handleInbox)
+
+	// Chat (public, but now requires pairing).
+	mux.HandleFunc("/chat-inbox", s.handleChatInbox)
+
+	// Identity & health probes.
+	mux.HandleFunc("/api/me", s.handleMe)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "ok")
+	})
+
+	// Peer announcement.
+	mux.HandleFunc("/api/peers/add", s.handleAddPeer)
+
+	// Pause/resume signal from sender.
+	mux.HandleFunc("/transfer-signal", s.handleTransferSignal)
+
+	// Pairing (peer-side = public).
+	mux.HandleFunc("/api/pair/claim", s.handlePairClaim)
+	mux.HandleFunc("/api/pair/pake-confirm", s.handlePAKEConfirm)
+	mux.HandleFunc("/api/pair/qr-claim", s.handleQRClaim)
+	mux.HandleFunc("/api/pair/remote-unpair", s.handleRemoteUnpair)
+
+	return mux
+}
+
+// handleTransferSignal processes pause/resume signals from the sending peer.
+func (s *Server) handleTransferSignal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		File   string `json:"file"`
+		Action string `json:"action"` // "pause" | "resume"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.File == "" || body.Action == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	peerName := r.Header.Get("X-From-Name")
+	if peerName == "" {
+		http.Error(w, "missing X-From-Name", http.StatusBadRequest)
+		return
+	}
+	s.Trk.SignalRecvTransfer(peerName, body.File, body.Action)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleRemoteUnpair processes unpair notifications from a remote peer.
+// Verifies the caller's IP matches the registered peer to prevent spoofing.
+func (s *Server) handleRemoteUnpair(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if peer, ok := s.Reg.Get(id); ok {
+		callerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+		peerIP, _, _ := net.SplitHostPort(peer.Host)
+		if normalizeIP(callerIP) != normalizeIP(peerIP) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+	Pairs.Unpair(id)
+	log.Printf("remote-unpair: %s unpaired us", id)
+	w.WriteHeader(http.StatusOK)
+}
+
+// StartServer launches the peer-facing HTTP server on the LAN port using
+// LANHandler — only public routes are exposed. The full Handler() (including
+// token-protected API and web UI) is served only through the Wails webview.
 func StartServer(srv *Server) {
 	var ln net.Listener
 	var err error
@@ -818,7 +1019,7 @@ func StartServer(srv *Server) {
 	}
 	go func() {
 		log.Printf("SwiftDrop %q listening on :%d", srv.ID.Name, srv.ID.Port)
-		if err := http.Serve(ln, srv.Handler()); err != nil && err != http.ErrServerClosed {
+		if err := http.Serve(ln, srv.LANHandler()); err != nil && err != http.ErrServerClosed {
 			log.Printf("serve: %v", err)
 		}
 	}()

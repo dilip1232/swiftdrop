@@ -102,6 +102,11 @@ func (s *Server) handleChatInbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	// Reject chat from unpaired senders to prevent spoofing.
+	if Pairs.IsPaired(body.FromID) == nil {
+		http.Error(w, "not paired", http.StatusForbidden)
+		return
+	}
 	if body.From == "" {
 		body.From = "Unknown"
 	}
