@@ -318,7 +318,55 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, (16 * dp).toInt())
         })
 
-        fun optionRow(icon: String, label: String, sub: String, onClick: () -> Unit) {
+        fun svgIcon(drawFile: Boolean): android.view.View {
+            val sz = (40 * dp).toInt()
+            return object : android.view.View(this) {
+                init { layoutParams = android.widget.LinearLayout.LayoutParams(sz, sz).apply {
+                    marginEnd = (14 * dp).toInt()
+                }}
+                override fun onDraw(canvas: android.graphics.Canvas) {
+                    super.onDraw(canvas)
+                    val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                    // Circle background
+                    p.color = 0xFF2E3440.toInt()
+                    canvas.drawCircle(sz / 2f, sz / 2f, sz / 2f, p)
+                    // Icon stroke
+                    p.color = 0xFF7EB6FF.toInt()
+                    p.style = android.graphics.Paint.Style.STROKE
+                    p.strokeWidth = 1.8f * dp
+                    p.strokeCap = android.graphics.Paint.Cap.ROUND
+                    p.strokeJoin = android.graphics.Paint.Join.ROUND
+                    val cx = sz / 2f; val cy = sz / 2f; val u = sz / 5f
+                    if (drawFile) {
+                        // Document icon: rectangle with folded corner
+                        val path = android.graphics.Path()
+                        path.moveTo(cx - u * 0.8f, cy - u * 1.2f)
+                        path.lineTo(cx + u * 0.3f, cy - u * 1.2f)
+                        path.lineTo(cx + u * 0.8f, cy - u * 0.7f)
+                        path.lineTo(cx + u * 0.8f, cy + u * 1.2f)
+                        path.lineTo(cx - u * 0.8f, cy + u * 1.2f)
+                        path.close()
+                        canvas.drawPath(path, p)
+                        // Fold
+                        canvas.drawLine(cx + u * 0.3f, cy - u * 1.2f, cx + u * 0.3f, cy - u * 0.7f, p)
+                        canvas.drawLine(cx + u * 0.3f, cy - u * 0.7f, cx + u * 0.8f, cy - u * 0.7f, p)
+                    } else {
+                        // Folder icon
+                        val path = android.graphics.Path()
+                        path.moveTo(cx - u, cy - u * 0.7f)
+                        path.lineTo(cx - u * 0.2f, cy - u * 0.7f)
+                        path.lineTo(cx + u * 0.1f, cy - u * 0.2f)
+                        path.lineTo(cx + u, cy - u * 0.2f)
+                        path.lineTo(cx + u, cy + u * 0.8f)
+                        path.lineTo(cx - u, cy + u * 0.8f)
+                        path.close()
+                        canvas.drawPath(path, p)
+                    }
+                }
+            }
+        }
+
+        fun optionRow(drawFile: Boolean, label: String, sub: String, onClick: () -> Unit) {
             val row = android.widget.LinearLayout(this).apply {
                 orientation = android.widget.LinearLayout.HORIZONTAL
                 gravity = android.view.Gravity.CENTER_VERTICAL
@@ -334,10 +382,7 @@ class MainActivity : AppCompatActivity() {
                 isFocusable = true
                 setOnClickListener { dialog.dismiss(); onClick() }
             }
-            row.addView(android.widget.TextView(this).apply {
-                text = icon; textSize = 26f
-                setPadding(0, 0, (14 * dp).toInt(), 0)
-            })
+            row.addView(svgIcon(drawFile))
             val col = android.widget.LinearLayout(this).apply {
                 orientation = android.widget.LinearLayout.VERTICAL
             }
@@ -352,8 +397,8 @@ class MainActivity : AppCompatActivity() {
             root.addView(row)
         }
 
-        optionRow("📄", "Files", "Pick one or more files") { pickFiles.launch(arrayOf("*/*")) }
-        optionRow("📁", "Folder", "Pick an entire folder") { pickFolder.launch(null) }
+        optionRow(true, "Files", "Pick one or more files") { pickFiles.launch(arrayOf("*/*")) }
+        optionRow(false, "Folder", "Pick an entire folder") { pickFolder.launch(null) }
 
         dialog.setContentView(root)
         dialog.window?.apply {

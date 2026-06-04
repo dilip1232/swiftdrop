@@ -331,14 +331,20 @@ function renderQueue() {
   for (const t of state.transfers) {
     const pct = t.size > 0 ? Math.round(t.sent / t.size * 100) : (t.status === "done" ? 100 : 0);
     const sending = t.status === "sending";
+    const pending = t.status === "pending";
+    const preparing = t.status === "preparing";
     const paused = t.status === "paused";
     const active = sending || paused;
     const recv = t.dir === "recv";
-    const label = paused ? "Paused"
+    const label = preparing ? "Preparing…"
+      : pending ? "Pending"
+      : paused ? "Paused"
       : t.status === "done" ? (recv ? "Received" : "Sent")
       : t.status === "error" ? "Failed" : t.status === "canceled" ? "Canceled" : pct + "%";
     let sub = (recv ? "↓ from " : "↑ to ") + esc(t.peer || "");
-    if (active) { sub += " · " + fmtSize(t.sent) + " / " + fmtSize(t.size); }
+    if (preparing) { sub += " · zipping folder…"; }
+    else if (pending) { sub += " · " + fmtSize(t.size) + " · waiting for approval"; }
+    else if (active) { sub += " · " + fmtSize(t.sent) + " / " + fmtSize(t.size); }
     else { sub += " · " + fmtSize(t.size); }
     if (sending && t.rate) sub += " · " + fmtSize(t.rate) + "/s";
     if (paused) sub += " · paused";
