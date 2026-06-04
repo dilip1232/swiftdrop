@@ -144,12 +144,11 @@ SwiftDrop is a **LAN-only** file transfer tool. It is designed to be safe on net
 - **Token theft** — the API token is only served to loopback; LAN peers cannot obtain it
 
 ### What SwiftDrop does NOT protect against
-- **Active MITM during QR pairing** — the QR token travels in cleartext in the claim request; an active attacker during the brief scan window could intercept it. PIN pairing (SPAKE2) is resistant to this.
-- **Compromised device on the LAN** — if an attacker controls a device on your network, they can observe mDNS announcements and attempt to pair (but cannot succeed without the PIN)
+- **Compromised device on the LAN** — if an attacker controls a device on your network, they can observe mDNS announcements and attempt to pair (but cannot succeed without the PIN or QR token)
 - **Timing side-channels on SPAKE2** — the current implementation uses P-256 big.Int arithmetic which is not constant-time; this is a theoretical concern for an on-LAN attacker measuring pairing timing
 
 ### Cryptographic note
-The SPAKE2 implementation is hand-rolled over Go's `crypto/elliptic` (P-256) and a matching Kotlin implementation for Android. The math is correct (asymmetric SPAKE2 with hash-to-curve, key derivation, and mutual confirmation MAC), but it has not been independently audited. For a production deployment, consider replacing it with a maintained PAKE library or commissioning an external review.
+The SPAKE2 implementation is hand-rolled over Go's `crypto/elliptic` (P-256) and a matching Kotlin implementation for Android. It is the single primitive securing both PIN and QR pairing. The math is correct (asymmetric SPAKE2 with hash-to-curve, key derivation, and mutual confirmation MAC), but it has not been independently audited and uses big.Int arithmetic that is not constant-time. Before marketing the app as "secure," this implementation should be reviewed by an independent cryptographer or replaced with a maintained PAKE library.
 
 ## Privacy
 
