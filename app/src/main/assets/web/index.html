@@ -147,10 +147,9 @@
   <h2>Files</h2>
   <div class="chooser" id="chooser">
     <div class="big">📤</div>
-    <p><b>Tap to choose files</b></p>
+    <p><b>Tap to choose files or folder</b></p>
     <p style="font-size:12px" id="hint">Pick a device above first</p>
   </div>
-  <button class="ghost" id="folderBtn" style="width:100%;margin-bottom:8px;font-size:12px;padding:9px 12px">📁 Pick Folder</button>
   <div id="queue"></div>
   <div class="actions">
     <button id="sendBtn" disabled>Send</button>
@@ -296,10 +295,8 @@ window.swiftdropOnDrop = infos => {
 };
 
 function pickFiles() {
-  if (window.AndroidBridge && AndroidBridge.pickFiles) AndroidBridge.pickFiles();
-}
-function pickFolder() {
-  if (window.AndroidBridge && AndroidBridge.pickFolder) AndroidBridge.pickFolder();
+  if (window.AndroidBridge && AndroidBridge.showPicker) AndroidBridge.showPicker();
+  else if (window.AndroidBridge && AndroidBridge.pickFiles) AndroidBridge.pickFiles();
 }
 
 const rates = {}; // transfer id -> {sent, t} for speed calc
@@ -355,7 +352,11 @@ function renderQueue() {
       resumeId: (paused && !recv) ? t.id : null
     }));
   }
-  for (const f of state.staged) q.appendChild(fileRow({ name: f.name, size: f.size, pct: 0, sub: fmtSize(f.size), label: "Ready" }));
+  for (const f of state.staged) {
+    const icon = f.is_folder ? "📁 " : "";
+    const sub = f.is_folder ? `${f.file_count} file${f.file_count !== 1 ? "s" : ""} · ${fmtSize(f.size)}` : fmtSize(f.size);
+    q.appendChild(fileRow({ name: icon + f.name, size: f.size, pct: 0, sub, label: "Ready" }));
+  }
 }
 
 async function cancelTransfer(id) {
@@ -396,16 +397,21 @@ function updateSend() {
 async function sendAll() {
   const tgt = state.devices.find(d => d.id === state.target);
   if (!tgt || !state.staged.length) return;
-  const paths = state.staged.map(f => f.path);
+  const items = state.staged.map(f => ({ path: f.path, is_folder: !!f.is_folder, name: f.name, size: f.size, file_count: f.file_count || 0 }));
   $("#sendBtn").disabled = true;
   try {
     const res = await apiFetch("/api/send-path", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: state.target, paths })
+      body: JSON.stringify({ to: state.target, items })
     });
     if (!res.ok) { toast(await res.text() || "Send failed", true); return; }
+    const folderCount = state.staged.filter(f => f.is_folder).length;
+    const fileCount = state.staged.length - folderCount;
+    const parts = [];
+    if (fileCount > 0) parts.push(`${fileCount} file${fileCount > 1 ? "s" : ""}`);
+    if (folderCount > 0) parts.push(`${folderCount} folder${folderCount > 1 ? "s" : ""}`);
     state.staged = [];
-    toast(`Sending ${paths.length} file${paths.length>1?"s":""} to ${tgt.name}`);
+    toast(`Sending ${parts.join(" and ")} to ${tgt.name}`);
     pollTransfers();
   } catch { toast("Send failed", true); }
   finally { updateSend(); }
@@ -596,7 +602,6 @@ $("#pinInput").addEventListener("keydown", e => { if (e.key === "Enter") pairSub
 $("#addBtn").addEventListener("click", addPeer);
 $("#hostInput").addEventListener("keydown", e => { if (e.key === "Enter") addPeer(); });
 $("#chooser").addEventListener("click", pickFiles);
-$("#folderBtn").addEventListener("click", pickFolder);
 $("#sendBtn").addEventListener("click", sendAll);
 $("#clearBtn").addEventListener("click", async () => {
   state.staged = [];

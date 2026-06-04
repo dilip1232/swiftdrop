@@ -1,12 +1,17 @@
 package com.swiftdrop
 
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import java.io.BufferedOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /**
  * Streams a file (given as a content URI) straight to a peer's /inbox using a
@@ -127,6 +132,146 @@ object Sender {
             t.conn = null
             Notifier.refreshServiceNotification()
             PowerLocks.end()
+        }
+    }
+
+    /**
+     * Zips a document tree (from OpenDocumentTree) on-the-fly and streams it
+     * to the peer as a single transfer with X-Folder: zip.
+     */
+    fun sendFolder(peer: Peer, treeUri: Uri, folderName: String, totalSize: Long, fileCount: Int) {
+        val cr = State.appContext.contentResolver
+        val key = PairStore.isPaired(peer.id)
+        val encrypted = key != null
+
+        val t = State.newTransfer(folderName, totalSize, peer.name, "send").also {
+            it.uri = treeUri.toString()
+            it.peerId = peer.id
+        }
+        Notifier.refreshServiceNotification()
+        PowerLocks.begin()
+        var conn: HttpURLConnection? = null
+        try {
+            // Pipe: zip writer in background thread → reader consumed by HTTP.
+            val pipedOut = PipedOutputStream()
+            val pipedIn = PipedInputStream(pipedOut, BUF)
+            val zipError = arrayOfNulls<Exception>(1)
+            val zipThread = Thread {
+                try {
+                    ZipOutputStream(BufferedOutputStream(pipedOut, BUF)).use { zos ->
+                        val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
+                        zipTreeChildren(cr, treeUri, rootDocId, "", zos, t)
+                    }
+                } catch (e: Exception) {
+                    zipError[0] = e
+                } finally {
+                    runCatching { pipedOut.close() }
+                }
+            }
+            zipThread.start()
+
+            conn = (URL("http://${peer.host}/inbox").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/octet-stream")
+                setRequestProperty("X-Filename", folderName)
+                setRequestProperty("X-From", State.deviceName)
+                setRequestProperty("X-From-ID", State.deviceId)
+                if (totalSize > 0) setRequestProperty("X-File-Size", totalSize.toString())
+                setRequestProperty("X-Folder", "zip")
+                if (encrypted) setRequestProperty("X-Encrypted", "aes-gcm-v2")
+                if (key != null) {
+                    val ts = (System.currentTimeMillis() / 1000).toString()
+                    val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+                    mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+                    val sig = mac.doFinal("${State.deviceId}|$folderName|$ts".toByteArray())
+                    setRequestProperty("X-Auth-HMAC", sig.joinToString("") { "%02x".format(it) })
+                    setRequestProperty("X-Auth-Time", ts)
+                }
+                connectTimeout = 8000
+                readTimeout = 0
+                setChunkedStreamingMode(BUF) // zip size is unknown
+            }
+            t.conn = conn
+
+            if (encrypted) {
+                val counting = CountingInputStream(pipedIn, t)
+                val bufferedOut = BufferedOutputStream(conn.outputStream, BUF)
+                Crypto.encryptStream(bufferedOut, counting, key!!)
+                bufferedOut.flush()
+            } else {
+                BufferedOutputStream(conn.outputStream, BUF).use { out ->
+                    val buf = ByteArray(BUF)
+                    while (true) {
+                        if (t.canceled) { conn.disconnect(); return }
+                        val n = pipedIn.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        t.sent.addAndGet(n.toLong())
+                    }
+                    out.flush()
+                }
+            }
+            pipedIn.close()
+            zipThread.join()
+            if (zipError[0] != null) throw zipError[0]!!
+
+            val code = conn.responseCode
+            conn.disconnect()
+            if (code != 200) {
+                t.status = "error"; t.err = "peer returned $code"
+            } else {
+                t.status = "done"
+            }
+        } catch (e: Exception) {
+            if (t.canceled) t.status = "canceled"
+            else { t.status = "error"; t.err = e.message }
+        } finally {
+            t.conn = null
+            Notifier.refreshServiceNotification()
+            PowerLocks.end()
+        }
+    }
+
+    /** Recursively add files from a document tree into a ZipOutputStream. */
+    private fun zipTreeChildren(
+        cr: android.content.ContentResolver, treeUri: Uri,
+        parentDocId: String, prefix: String,
+        zos: ZipOutputStream, t: Transfer
+    ) {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+        cr.query(childrenUri, arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        ), null, null, null)?.use { c ->
+            val idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mimeIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            while (c.moveToNext()) {
+                if (t.canceled) return
+                val docId = c.getString(idIdx)
+                val entryName = c.getString(nameIdx) ?: docId
+                val mime = c.getString(mimeIdx)
+                val entryPath = if (prefix.isEmpty()) entryName else "$prefix/$entryName"
+                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    zos.putNextEntry(ZipEntry("$entryPath/"))
+                    zos.closeEntry()
+                    zipTreeChildren(cr, treeUri, docId, entryPath, zos, t)
+                } else {
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                    zos.putNextEntry(ZipEntry(entryPath))
+                    cr.openInputStream(docUri)?.use { input ->
+                        val buf = ByteArray(BUF)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            zos.write(buf, 0, n)
+                        }
+                    }
+                    zos.closeEntry()
+                }
+            }
         }
     }
 

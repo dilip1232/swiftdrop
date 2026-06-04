@@ -37,10 +37,7 @@ class MainActivity : AppCompatActivity() {
 
     private val pickFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
-            if (treeUri != null) {
-                val uris = walkTree(treeUri)
-                if (uris.isNotEmpty()) stageUris(uris)
-            }
+            if (treeUri != null) stageFolderTree(treeUri)
         }
 
     private val askNotify =
@@ -257,33 +254,46 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript(js, null)
     }
 
-    /** Recursively collect all file URIs under a document tree. */
-    private fun walkTree(treeUri: Uri): List<Uri> {
-        val result = mutableListOf<Uri>()
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-            treeUri, DocumentsContract.getTreeDocumentId(treeUri)
-        )
-        walkChildren(treeUri, childrenUri, result)
-        return result
-    }
-
-    private fun walkChildren(treeUri: Uri, childrenUri: Uri, out: MutableList<Uri>) {
-        contentResolver.query(childrenUri, arrayOf(
-            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_MIME_TYPE
-        ), null, null, null)?.use { c ->
-            val idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-            val mimeIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
-            while (c.moveToNext()) {
-                val docId = c.getString(idIdx)
-                val mime = c.getString(mimeIdx)
-                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    val subChildren = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
-                    walkChildren(treeUri, subChildren, out)
-                } else {
-                    out.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, docId))
+    /** Stage a picked folder tree as a single item with total size and file count. */
+    private fun stageFolderTree(treeUri: Uri) {
+        // Get the display name of the picked folder.
+        val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
+        var folderName = rootDocId.substringAfterLast('/').substringAfterLast(':').ifEmpty { "Folder" }
+        // Walk tree to compute total size and file count.
+        var totalSize = 0L; var fileCount = 0
+        fun walk(parentDocId: String) {
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+            contentResolver.query(childrenUri, arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE
+            ), null, null, null)?.use { c ->
+                val idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val mimeIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                while (c.moveToNext()) {
+                    val docId = c.getString(idIdx)
+                    val mime = c.getString(mimeIdx)
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        walk(docId)
+                    } else {
+                        fileCount++
+                        if (sizeIdx >= 0 && !c.isNull(sizeIdx)) totalSize += c.getLong(sizeIdx)
+                    }
                 }
             }
+        }
+        walk(rootDocId)
+        if (fileCount == 0) return
+        val arr = JSONArray().put(JSONObject().apply {
+            put("name", folderName)
+            put("size", totalSize)
+            put("path", treeUri.toString())
+            put("is_folder", true)
+            put("file_count", fileCount)
+        })
+        runOnUiThread {
+            web.evaluateJavascript("window.swiftdropOnDrop && window.swiftdropOnDrop($arr)", null)
         }
     }
 
@@ -296,6 +306,22 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun pickFolder() {
             runOnUiThread { pickFolder.launch(null) }
+        }
+
+        @JavascriptInterface
+        fun showPicker() {
+            runOnUiThread {
+                val items = arrayOf("Files", "Folder")
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Choose what to send")
+                    .setItems(items) { _, which ->
+                        when (which) {
+                            0 -> pickFiles.launch(arrayOf("*/*"))
+                            1 -> pickFolder.launch(null)
+                        }
+                    }
+                    .show()
+            }
         }
 
         @JavascriptInterface

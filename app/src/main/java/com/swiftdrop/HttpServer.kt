@@ -296,10 +296,28 @@ class HttpServer : NanoHTTPD(State.PORT) {
             return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "pair with this device first")
         }
 
-        val paths = obj.optJSONArray("paths") ?: JSONArray()
-        for (i in 0 until paths.length()) {
-            val uri = Uri.parse(paths.getString(i))
-            Thread { Sender.sendUri(peer, uri) }.start()
+        // New format: items=[{path, is_folder, name, size, file_count}]
+        val items = obj.optJSONArray("items")
+        if (items != null) {
+            for (i in 0 until items.length()) {
+                val item = items.getJSONObject(i)
+                val uri = Uri.parse(item.getString("path"))
+                if (item.optBoolean("is_folder", false)) {
+                    val name = item.optString("name", "Folder")
+                    val size = item.optLong("size", 0)
+                    val count = item.optInt("file_count", 0)
+                    Thread { Sender.sendFolder(peer, uri, name, size, count) }.start()
+                } else {
+                    Thread { Sender.sendUri(peer, uri) }.start()
+                }
+            }
+        } else {
+            // Legacy format: paths=["uri1", "uri2"]
+            val paths = obj.optJSONArray("paths") ?: JSONArray()
+            for (i in 0 until paths.length()) {
+                val uri = Uri.parse(paths.getString(i))
+                Thread { Sender.sendUri(peer, uri) }.start()
+            }
         }
         return json("""{"ok":true}""")
     }
