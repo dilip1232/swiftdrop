@@ -25,6 +25,9 @@ files land in `Downloads\SwiftDrop\`.
 - **LAN subnet scan** — fallback discovery for networks where mDNS is unavailable (common on Windows)
 - **System tray** — app lives in the system tray; click the icon to show/hide the window
 - **Per-device chat** — chat with individual paired devices; SVG icons, animated panel, unread indicator
+- **Folder transfer** — send entire folders; files stream in parallel and the directory structure is preserved on the receiver
+- **Partial transfer status** — cancelled folder transfers show exactly how many files were received
+- **Duplicate name protection** — folders and files with existing names get a unique suffix instead of overwriting
 - **Receiver consent** — accept/reject incoming transfers before they are written
 - **Pause/resume transfers** — pause and resume in-flight transfers from the UI; remote peer sees paused state
 

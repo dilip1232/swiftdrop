@@ -167,7 +167,7 @@ func runHeadless(port int) {
 
 	log.Printf("SwiftDrop headless on :%d  id=%s", id.Port, id.ID)
 	go func() {
-		if err := http.Serve(ln, srv.Handler()); err != nil && err != http.ErrServerClosed {
+		if err := http.Serve(ln, srv.LANHandler()); err != nil && err != http.ErrServerClosed {
 			log.Printf("serve: %v", err)
 		}
 	}()
