@@ -127,15 +127,17 @@ func runApp(port int) {
 		window.ExecJS(fmt.Sprintf("window.swiftdropOnDrop && window.swiftdropOnDrop(%s)", string(data)))
 	})
 
-	// Non-blocking consent: pop the window and inject a prominent accept/reject
-	// dialog via JS. The notification is already sent by handleInbox.
+	// Native macOS Accept/Reject dialog. ConsentDialog blocks until the user
+	// responds, then feeds tr.Decision so the server handler unblocks.
 	srv.ConsentHook = func(tr *core.Transfer, from, name string, size int64) {
-		window.Show()
-		window.Focus()
-		js := fmt.Sprintf(
-			`window.showConsentDialog && window.showConsentDialog(%q, %q, %q, %q)`,
-			tr.ID, from, name, core.HumanSize(size))
-		window.ExecJS(js)
+		sizeStr := core.HumanSize(size)
+		title := fmt.Sprintf("%s wants to send you a file", from)
+		body := fmt.Sprintf("%s (%s)", name, sizeStr)
+		accepted := core.ConsentDialog(title, body)
+		select {
+		case tr.Decision <- accepted:
+		default:
+		}
 	}
 
 	tray := app.SystemTray.New()
