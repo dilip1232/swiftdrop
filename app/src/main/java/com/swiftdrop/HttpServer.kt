@@ -256,18 +256,22 @@ class HttpServer : NanoHTTPD(State.PORT) {
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             cr.update(dest, values, null, null)
 
-            // Auto-unzip folder transfers.
+            // Auto-unzip folder transfers in the background so the sender
+            // gets 200 immediately without waiting for extraction.
             val isFolder = session.headers["x-folder"] == "zip"
             if (isFolder) {
-                try {
-                    unzipMediaStore(cr, dest, name.substringBeforeLast(".").ifEmpty { name })
-                    cr.delete(dest, null, null) // clean up temp zip
-                } catch (e: Exception) {
-                    tr.status = "error"; tr.err = "unzip: ${e.message}"
-                    return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "unzip failed: ${e.message}")
-                }
+                val folderLabel = name.substringBeforeLast(".").ifEmpty { name }
                 tr.status = "done"
-                Notifier.show(State.appContext, "Received folder $name")
+                Thread {
+                    try {
+                        unzipMediaStore(cr, dest, folderLabel)
+                        cr.delete(dest, null, null) // clean up temp zip
+                        Notifier.show(State.appContext, "Received folder $name")
+                    } catch (e: Exception) {
+                        android.util.Log.e("SwiftDrop", "unzip $name failed", e)
+                        Notifier.show(State.appContext, "Received $name (unzip failed)")
+                    }
+                }.start()
             } else {
                 tr.status = "done"
                 Notifier.show(State.appContext, "Received $name")
