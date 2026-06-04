@@ -370,7 +370,8 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Verify decrypted file size matches X-File-Size to detect truncation.
-		if origSize > 0 {
+		// Skip for folder (zip) transfers — X-File-Size is the raw total, not the zip size.
+		if origSize > 0 && r.Header.Get("X-Folder") != "zip" {
 			if fi, err := f.Stat(); err == nil && fi.Size() != origSize {
 				s.Trk.Finish(tr, fmt.Errorf("size mismatch: expected %d, got %d", origSize, fi.Size()))
 				f.Close()
