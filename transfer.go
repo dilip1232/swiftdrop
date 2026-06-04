@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -41,25 +42,51 @@ func (c *CountingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// FileInfo is a staged file the UI shows before sending.
+// FileInfo is a staged file or folder the UI shows before sending.
 type FileInfo struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
-	Size int64  `json:"size"`
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+	IsFolder  bool   `json:"is_folder,omitempty"`
+	FileCount int    `json:"file_count,omitempty"`
 }
 
-// FileInfos stats each path, skipping anything that can't be read or is a
-// directory, so the UI only ever stages real, sendable files.
+// FileInfos stats each path. Directories are included with their total size
+// and a "folder" flag so the UI can stage them for folder transfer.
 func FileInfos(paths []string) []FileInfo {
 	out := make([]FileInfo, 0, len(paths))
 	for _, p := range paths {
 		fi, err := os.Stat(p)
-		if err != nil || fi.IsDir() {
+		if err != nil {
 			continue
 		}
-		out = append(out, FileInfo{Path: p, Name: filepath.Base(p), Size: fi.Size()})
+		if fi.IsDir() {
+			totalSize, fileCount := dirStats(p)
+			out = append(out, FileInfo{
+				Path:      p,
+				Name:      filepath.Base(p),
+				Size:      totalSize,
+				IsFolder:  true,
+				FileCount: fileCount,
+			})
+		} else {
+			out = append(out, FileInfo{Path: p, Name: filepath.Base(p), Size: fi.Size()})
+		}
 	}
 	return out
+}
+
+// dirStats walks a directory and returns the total size and file count.
+func dirStats(root string) (totalSize int64, fileCount int) {
+	filepath.Walk(root, func(_ string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() {
+			return nil
+		}
+		totalSize += fi.Size()
+		fileCount++
+		return nil
+	})
+	return
 }
 
 // SendFileByPath is the fast path: Go opens the file itself and streams it
@@ -96,11 +123,11 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 		go func() {
 			pw.CloseWithError(EncryptStream(pw, &CountingReader{R: f, Tr: tr}, key))
 		}()
-		err = SendToPeerWithOpts(ctx, peer, self, name, pr, EncryptedSize(fi.Size()), fi.Size(), true)
+		err = SendToPeerWithOpts(ctx, peer, self, name, pr, EncryptedSize(fi.Size()), fi.Size(), true, "")
 	} else {
 		// Unencrypted fallback (handleSendPath already rejects unpaired peers).
 		var body io.Reader = &CountingReader{R: f, Tr: tr}
-		err = SendToPeerWithOpts(ctx, peer, self, name, body, fi.Size(), fi.Size(), false)
+		err = SendToPeerWithOpts(ctx, peer, self, name, body, fi.Size(), fi.Size(), false, "")
 	}
 
 	if err != nil {
@@ -112,6 +139,240 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 	trk.Finish(tr, err)
 }
 
+// SendFolderByPath sends each file in a folder individually in parallel.
+// No zip — files are streamed as-is with relative path headers.
+func SendFolderByPath(peer Peer, self Identity, dirPath string, trk *Tracker) {
+	name := filepath.Base(dirPath)
+	totalSize, fileCount := dirStats(dirPath)
+	if fileCount == 0 {
+		trk.Finish(trk.Start(name, 0, peer.Name, "send"), fmt.Errorf("empty folder"))
+		return
+	}
+
+	tr := trk.Start("📁 "+name, totalSize, peer.Name, "send")
+	tr.FilePath = dirPath
+	tr.PeerID = peer.ID
+	tr.Status = "preparing"
+	ctx, cancel := context.WithCancel(context.Background())
+	trk.SetCancel(tr, cancel)
+	defer cancel()
+
+	// Phase 1: announce folder → get consent + session token.
+	session, err := announceFolderToPeer(ctx, peer, self, name, totalSize, fileCount)
+	if err != nil {
+		log.Printf("sendFolderByPath %q announce failed: %v", name, err)
+		trk.Finish(tr, err)
+		return
+	}
+
+	// Phase 2: walk and send each file in parallel (max 4 concurrent).
+	tr.Status = "sending"
+	atomic.StoreInt64(&tr.Sent, 0)
+
+	type fileEntry struct {
+		path string
+		rel  string
+		size int64
+	}
+	var files []fileEntry
+	filepath.Walk(dirPath, func(path string, fi os.FileInfo, walkErr error) error {
+		if walkErr != nil || fi.IsDir() {
+			return nil
+		}
+		if fi.Name() == ".DS_Store" || strings.HasPrefix(fi.Name(), "._") {
+			return nil
+		}
+		rel, _ := filepath.Rel(dirPath, path)
+		rel = filepath.ToSlash(rel)
+		files = append(files, fileEntry{path, rel, fi.Size()})
+		return nil
+	})
+
+	var (
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, 4)
+		errOnce  sync.Once
+		firstErr error
+		okCount  int64
+	)
+	for _, fe := range files {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(fe fileEntry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := sendFolderFileToPeer(ctx, peer, self, fe.rel, fe.path, fe.size, session, tr); err != nil {
+				errOnce.Do(func() { firstErr = err })
+				log.Printf("folder-file %s/%s to %s FAILED: %v", name, fe.rel, peer.Name, err)
+			} else {
+				atomic.AddInt64(&okCount, 1)
+			}
+		}(fe)
+	}
+	wg.Wait()
+
+	// Phase 3: signal folder done (include cancel flag so receiver knows).
+	cancelled := tr.Status == "canceled" || (ctx.Err() != nil)
+	sendFolderDone(ctx, peer, self, name, session, cancelled)
+
+	if firstErr != nil {
+		log.Printf("sendFolderByPath %q to %s: %d/%d sent, first err: %v", name, peer.Name, okCount, len(files), firstErr)
+	} else {
+		log.Printf("sendFolderByPath %q (%d files, %s) to %s OK", name, fileCount, HumanSize(totalSize), peer.Name)
+		Notify("SwiftDrop", fmt.Sprintf("Sent folder %s (%d files) to %s", name, fileCount, peer.Name))
+	}
+	trk.Finish(tr, firstErr)
+}
+
+// announceFolderToPeer sends a lightweight announcement to get consent and
+// a session token before streaming individual files.
+func announceFolderToPeer(ctx context.Context, peer Peer, self Identity, folderName string, totalSize int64, fileCount int) (string, error) {
+	target := fmt.Sprintf("http://%s/inbox", peer.Host)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, http.NoBody)
+	if err != nil {
+		return "", err
+	}
+	req.ContentLength = 0
+	req.Header.Set("X-Filename", folderName)
+	req.Header.Set("X-From", self.Name)
+	req.Header.Set("X-From-ID", self.ID)
+	req.Header.Set("X-File-Size", strconv.FormatInt(totalSize, 10))
+	req.Header.Set("X-Folder-Announce", "true")
+	req.Header.Set("X-Folder-Count", strconv.Itoa(fileCount))
+
+	if key := Pairs.IsPaired(peer.ID); key != nil {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(hmacsha.New, key)
+		mac.Write([]byte(self.ID + "|" + folderName + "|" + ts))
+		req.Header.Set("X-Auth-HMAC", hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Auth-Time", ts)
+	}
+
+	resp, err := TransferClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("folder announce: %d: %s", resp.StatusCode, string(msg))
+	}
+	var result struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("folder announce: bad response: %w", err)
+	}
+	if result.Session == "" {
+		return "", fmt.Errorf("folder announce: empty session")
+	}
+	return result.Session, nil
+}
+
+// sendFolderFileToPeer sends a single file belonging to a folder session.
+func sendFolderFileToPeer(ctx context.Context, peer Peer, self Identity, relPath, filePath string, fileSize int64, session string, tr *Transfer) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Use sanitized relPath (/ → _) as the HMAC filename so each file in
+	// the folder gets a unique HMAC even if base names collide across subdirs.
+	hmacName := strings.ReplaceAll(relPath, "/", "_")
+	target := fmt.Sprintf("http://%s/inbox", peer.Host)
+
+	key := Pairs.IsPaired(peer.ID)
+	var body io.Reader
+	var contentLength int64
+	var encrypted bool
+
+	if key != nil {
+		pr, pw := io.Pipe()
+		go func() {
+			pw.CloseWithError(EncryptStream(pw, &CountingReader{R: f, Tr: tr}, key))
+		}()
+		body = pr
+		contentLength = EncryptedSize(fileSize)
+		encrypted = true
+	} else {
+		body = &CountingReader{R: f, Tr: tr}
+		contentLength = fileSize
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
+	if err != nil {
+		return err
+	}
+	if contentLength >= 0 {
+		req.ContentLength = contentLength
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Filename", hmacName)
+	req.Header.Set("X-From", self.Name)
+	req.Header.Set("X-From-ID", self.ID)
+	req.Header.Set("X-File-Size", strconv.FormatInt(fileSize, 10))
+	req.Header.Set("X-Folder-Session", session)
+	req.Header.Set("X-Folder-Rel", relPath)
+	if encrypted {
+		req.Header.Set("X-Encrypted", "aes-gcm-v2")
+	}
+
+	if key != nil {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(hmacsha.New, key)
+		mac.Write([]byte(self.ID + "|" + hmacName + "|" + ts))
+		req.Header.Set("X-Auth-HMAC", hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Auth-Time", ts)
+	}
+
+	resp, err := TransferClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(msg))
+	}
+	return nil
+}
+
+// sendFolderDone tells the receiver the folder transfer is complete.
+// Uses a fresh context so the signal reaches the receiver even if the
+// transfer was cancelled on the sender side.
+func sendFolderDone(_ context.Context, peer Peer, self Identity, folderName, session string, cancelled bool) {
+	doneCtx, doneCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer doneCancel()
+
+	target := fmt.Sprintf("http://%s/inbox", peer.Host)
+	req, err := http.NewRequestWithContext(doneCtx, http.MethodPost, target, http.NoBody)
+	if err != nil {
+		return
+	}
+	req.ContentLength = 0
+	req.Header.Set("X-Filename", folderName)
+	req.Header.Set("X-From", self.Name)
+	req.Header.Set("X-From-ID", self.ID)
+	req.Header.Set("X-Folder-Done", session)
+	if cancelled {
+		req.Header.Set("X-Folder-Cancelled", "true")
+	}
+
+	if key := Pairs.IsPaired(peer.ID); key != nil {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(hmacsha.New, key)
+		mac.Write([]byte(self.ID + "|" + folderName + "|" + ts))
+		req.Header.Set("X-Auth-HMAC", hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Auth-Time", ts)
+	}
+
+	resp, err := TransferClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
 // TransferClient is tuned for throughput on the LAN: keep-alives on, generous
 // timeouts (large files), and no response-body limits.
 var TransferClient = &http.Client{
@@ -120,8 +381,8 @@ var TransferClient = &http.Client{
 		MaxIdleConns:          16,
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: 3 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second, // detect stalled peers
-		DisableCompression:    true,             // we move mostly-incompressible bytes
+		ResponseHeaderTimeout: 0,    // disabled: receiver may unzip folders before replying
+		DisableCompression:    true, // we move mostly-incompressible bytes
 		TLSHandshakeTimeout:   10 * time.Second,
 		WriteBufferSize:       256 * 1024,
 		ReadBufferSize:        256 * 1024,
@@ -132,7 +393,7 @@ var TransferClient = &http.Client{
 // buffering the whole file. contentLength may be -1 if unknown (chunked).
 // When encrypted is true, the X-Encrypted header is set so the receiver knows
 // to decrypt. Canceling ctx aborts the in-flight request.
-func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename string, body io.Reader, contentLength int64, originalSize int64, encrypted bool, sha256hash ...string) error {
+func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename string, body io.Reader, contentLength int64, originalSize int64, encrypted bool, sha256hash string, isFolder ...bool) error {
 	target := fmt.Sprintf("http://%s/inbox", peer.Host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {
@@ -149,10 +410,13 @@ func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename 
 		req.Header.Set("X-File-Size", strconv.FormatInt(originalSize, 10))
 	}
 	if encrypted {
-		req.Header.Set("X-Encrypted", "aes-gcm")
+		req.Header.Set("X-Encrypted", "aes-gcm-v2")
 	}
-	if len(sha256hash) > 0 && sha256hash[0] != "" {
-		req.Header.Set("X-SHA256", sha256hash[0])
+	if sha256hash != "" {
+		req.Header.Set("X-SHA256", sha256hash)
+	}
+	if len(isFolder) > 0 && isFolder[0] {
+		req.Header.Set("X-Folder", "zip")
 	}
 	// HMAC sender authentication: sign fromID|filename|timestamp with shared key.
 	if key := Pairs.IsPaired(peer.ID); key != nil {
