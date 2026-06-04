@@ -144,16 +144,24 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 // transfer encoding that NanoHTTPD (Android) doesn't decode transparently.
 func SendFolderByPath(peer Peer, self Identity, dirPath string, trk *Tracker) {
 	name := filepath.Base(dirPath)
-	_, fileCount := dirStats(dirPath)
+	totalSize, fileCount := dirStats(dirPath)
 	if fileCount == 0 {
 		trk.Finish(trk.Start(name, 0, peer.Name, "send"), fmt.Errorf("empty folder"))
 		return
 	}
 
+	// Show the transfer immediately so the UI doesn't "disappear".
+	tr := trk.Start("📁 "+name, totalSize, peer.Name, "send")
+	tr.FilePath = dirPath
+	tr.PeerID = peer.ID
+	tr.Status = "preparing"
+	ctx, cancel := context.WithCancel(context.Background())
+	trk.SetCancel(tr, cancel)
+	defer cancel()
+
 	// ── Phase 1: zip to temp file ──
 	tmp, err := os.CreateTemp("", "swiftdrop-folder-*.zip")
 	if err != nil {
-		tr := trk.Start("📁 "+name, 0, peer.Name, "send")
 		trk.Finish(tr, fmt.Errorf("create temp: %w", err))
 		return
 	}
@@ -186,26 +194,21 @@ func SendFolderByPath(peer Peer, self Identity, dirPath string, trk *Tracker) {
 	zw.Close()
 	tmp.Close()
 	if walkErr != nil {
-		tr := trk.Start("📁 "+name, 0, peer.Name, "send")
 		trk.Finish(tr, walkErr)
 		return
 	}
 
 	zipInfo, err := os.Stat(tmpPath)
 	if err != nil {
-		tr := trk.Start("📁 "+name, 0, peer.Name, "send")
 		trk.Finish(tr, err)
 		return
 	}
 	zipSize := zipInfo.Size()
 
 	// ── Phase 2: send the temp zip file with known content-length ──
-	tr := trk.Start("📁 "+name, zipSize, peer.Name, "send")
-	tr.FilePath = dirPath
-	tr.PeerID = peer.ID
-	ctx, cancel := context.WithCancel(context.Background())
-	trk.SetCancel(tr, cancel)
-	defer cancel()
+	tr.Size = zipSize
+	atomic.StoreInt64(&tr.Sent, 0)
+	tr.Status = "sending"
 
 	zipFile, err := os.Open(tmpPath)
 	if err != nil {
@@ -242,8 +245,8 @@ var TransferClient = &http.Client{
 		MaxIdleConns:          16,
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: 3 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second, // detect stalled peers
-		DisableCompression:    true,             // we move mostly-incompressible bytes
+		ResponseHeaderTimeout: 0,    // disabled: receiver may unzip folders before replying
+		DisableCompression:    true, // we move mostly-incompressible bytes
 		TLSHandshakeTimeout:   10 * time.Second,
 		WriteBufferSize:       256 * 1024,
 		ReadBufferSize:        256 * 1024,
