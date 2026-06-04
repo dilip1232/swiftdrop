@@ -3,6 +3,7 @@ package core
 import (
 	"archive/zip"
 	"crypto/hmac"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,6 +48,19 @@ type Server struct {
 
 	// Replays prevents HMAC replay attacks on /inbox.
 	Replays *ReplayCache
+
+	// folderSessions maps session tokens to active folder transfers.
+	folderSessions sync.Map // string -> *FolderSession
+}
+
+// FolderSession tracks a multi-file folder transfer on the receiver side.
+type FolderSession struct {
+	FolderName    string
+	SenderID      string
+	Transfer      *Transfer
+	DlDir         string
+	Created       time.Time
+	FilesReceived int64 // atomically incremented per successful file
 }
 
 // DefaultPort is the LAN port SwiftDrop serves on for peer-to-peer transfers.
@@ -271,6 +286,20 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	if !s.Replays.Check(authHMAC) {
 		log.Printf("inbox HMAC replay detected from %s", fromID)
 		http.Error(w, "replay detected", http.StatusForbidden)
+		return
+	}
+
+	// ── Folder protocol: announce / file / done ──
+	if r.Header.Get("X-Folder-Announce") == "true" {
+		s.handleFolderAnnounce(w, r, name, from, fromID)
+		return
+	}
+	if sessionID := r.Header.Get("X-Folder-Done"); sessionID != "" {
+		s.handleFolderDone(w, r, sessionID, from)
+		return
+	}
+	if sessionID := r.Header.Get("X-Folder-Session"); sessionID != "" {
+		s.handleFolderFile(w, r, sessionID, from, fromID)
 		return
 	}
 
@@ -500,6 +529,181 @@ func unzipFile(zipPath, destDir string) error {
 		}
 	}
 	return nil
+}
+
+// ── Folder protocol handlers ────────────────────────────────────────────────
+
+// handleFolderAnnounce creates a pending transfer, shows consent, and returns
+// a session token so subsequent file requests can be auto-accepted.
+func (s *Server) handleFolderAnnounce(w http.ResponseWriter, r *http.Request, folderName, from, fromID string) {
+	folderSize, _ := strconv.ParseInt(r.Header.Get("X-File-Size"), 10, 64)
+	folderCount := r.Header.Get("X-Folder-Count")
+
+	displayName := "📁 " + folderName
+	tr := s.Trk.StartPending(displayName, folderSize, from)
+	Notify("SwiftDrop", fmt.Sprintf("%s wants to send %s (%s, %s files)", from, displayName, HumanSize(folderSize), folderCount))
+	if s.ConsentHook != nil {
+		go s.ConsentHook(tr, from, folderName, folderSize)
+	}
+
+	select {
+	case accepted := <-tr.Decision:
+		if !accepted {
+			s.Trk.Finish(tr, fmt.Errorf("rejected by user"))
+			http.Error(w, "transfer rejected", http.StatusForbidden)
+			return
+		}
+	case <-time.After(60 * time.Second):
+		s.Trk.Finish(tr, fmt.Errorf("no response — auto-rejected"))
+		http.Error(w, "transfer timed out", http.StatusRequestTimeout)
+		return
+	}
+	tr.Status = "sending"
+
+	// Generate session token.
+	tokenBytes := make([]byte, 16)
+	cryptorand.Read(tokenBytes)
+	session := hex.EncodeToString(tokenBytes)
+
+	dlDir := DownloadDir()
+	folderDir := UniquePath(filepath.Join(dlDir, folderName))
+	folderName = filepath.Base(folderDir) // may be "Folder (1)" if original exists
+	os.MkdirAll(folderDir, 0755)
+
+	s.folderSessions.Store(session, &FolderSession{
+		FolderName: folderName,
+		SenderID:   fromID,
+		Transfer:   tr,
+		DlDir:      dlDir,
+		Created:    time.Now(),
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"session": session})
+	log.Printf("folder-announce %q from %s → session %s", folderName, from, session[:8])
+}
+
+// handleFolderFile receives a single file within a folder session (auto-accepted).
+func (s *Server) handleFolderFile(w http.ResponseWriter, r *http.Request, sessionID, from, fromID string) {
+	defer r.Body.Close()
+
+	fsVal, ok := s.folderSessions.Load(sessionID)
+	if !ok {
+		http.Error(w, "invalid/expired folder session", http.StatusBadRequest)
+		return
+	}
+	fs := fsVal.(*FolderSession)
+	if fs.SenderID != fromID {
+		http.Error(w, "sender mismatch", http.StatusForbidden)
+		return
+	}
+
+	relPath := filepath.FromSlash(r.Header.Get("X-Folder-Rel"))
+	if relPath == "" || strings.Contains(relPath, "..") {
+		http.Error(w, "invalid relative path", http.StatusBadRequest)
+		return
+	}
+
+	dest := filepath.Join(fs.DlDir, fs.FolderName, relPath)
+	os.MkdirAll(filepath.Dir(dest), 0755)
+
+	f, err := os.Create(dest)
+	if err != nil {
+		http.Error(w, "cannot create file", http.StatusInternalServerError)
+		log.Printf("folder-file create %s: %v", dest, err)
+		return
+	}
+
+	var body io.Reader = &CountingReader{R: r.Body, Tr: fs.Transfer}
+	encHdr := r.Header.Get("X-Encrypted")
+	if encHdr == "aes-gcm-v2" || encHdr == "aes-gcm" {
+		pairKey := Pairs.IsPaired(fromID)
+		if pairKey == nil {
+			f.Close()
+			os.Remove(dest)
+			http.Error(w, "not paired", http.StatusForbidden)
+			return
+		}
+		var decErr error
+		if encHdr == "aes-gcm-v2" {
+			decErr = DecryptStream(f, body, pairKey)
+		} else {
+			decErr = DecryptStreamV1(f, body, pairKey)
+		}
+		if decErr != nil {
+			f.Close()
+			os.Remove(dest)
+			http.Error(w, "decryption failed", http.StatusBadRequest)
+			log.Printf("folder-file decrypt %s: %v", dest, decErr)
+			return
+		}
+	} else {
+		if _, err := io.Copy(f, body); err != nil {
+			f.Close()
+			os.Remove(dest)
+			http.Error(w, "interrupted", http.StatusInternalServerError)
+			log.Printf("folder-file copy %s: %v", dest, err)
+			return
+		}
+	}
+	f.Close()
+	atomic.AddInt64(&fs.FilesReceived, 1)
+
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, `{"ok":true}`)
+}
+
+// handleFolderDone finalises a folder transfer — marks it done and notifies.
+// If the sender cancelled, X-Folder-Cancelled is set, and we show partial status.
+func (s *Server) handleFolderDone(w http.ResponseWriter, r *http.Request, sessionID, from string) {
+	cancelled := r.Header.Get("X-Folder-Cancelled") == "true"
+	if fsVal, ok := s.folderSessions.LoadAndDelete(sessionID); ok {
+		fs := fsVal.(*FolderSession)
+		recv := atomic.LoadInt64(&fs.FilesReceived)
+		n := atomic.LoadInt64(&fs.Transfer.Sent)
+		if cancelled {
+			if recv > 0 {
+				fs.Transfer.Status = "done"
+				fs.Transfer.Err = fmt.Sprintf("cancelled by sender – %d file(s) received", recv)
+				log.Printf("folder-cancelled %q from %s: %d files, %s", fs.FolderName, from, recv, HumanSize(n))
+				Notify("SwiftDrop", fmt.Sprintf("Folder %s partially received (%d files) from %s", fs.FolderName, recv, from))
+			} else {
+				fs.Transfer.Status = "canceled"
+				fs.Transfer.Err = "cancelled by sender"
+				log.Printf("folder-cancelled %q from %s: 0 files received", fs.FolderName, from)
+			}
+			// Remove empty dirs left behind.
+			folderDir := filepath.Join(fs.DlDir, fs.FolderName)
+			removeEmptyDirs(folderDir)
+		} else {
+			s.Trk.Finish(fs.Transfer, nil)
+			log.Printf("folder-done %q from %s (%d files, %s)", fs.FolderName, from, recv, HumanSize(n))
+			Notify("SwiftDrop", fmt.Sprintf("Received folder %s (%d files, %s) from %s", fs.FolderName, recv, HumanSize(n), from))
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, `{"ok":true}`)
+}
+
+// removeEmptyDirs walks bottom-up and removes directories that are empty.
+func removeEmptyDirs(root string) {
+	filepath.Walk(root, func(_ string, _ os.FileInfo, _ error) error { return nil }) // ensure walk
+	// Collect dirs bottom-up
+	var dirs []string
+	filepath.Walk(root, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if fi.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	// Remove in reverse order (deepest first).
+	for i := len(dirs) - 1; i >= 0; i-- {
+		os.Remove(dirs[i]) // only succeeds if empty
+	}
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, _ *http.Request) {

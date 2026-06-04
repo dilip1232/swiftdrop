@@ -1,7 +1,6 @@
 package core
 
 import (
-	"archive/zip"
 	"context"
 	"crypto/hmac"
 	hmacsha "crypto/sha256"
@@ -17,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -139,9 +139,8 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 	trk.Finish(tr, err)
 }
 
-// SendFolderByPath zips a directory to a temp file, then streams it to the peer.
-// Using a temp file gives us a known content-length, which avoids chunked
-// transfer encoding that NanoHTTPD (Android) doesn't decode transparently.
+// SendFolderByPath sends each file in a folder individually in parallel.
+// No zip — files are streamed as-is with relative path headers.
 func SendFolderByPath(peer Peer, self Identity, dirPath string, trk *Tracker) {
 	name := filepath.Base(dirPath)
 	totalSize, fileCount := dirStats(dirPath)
@@ -150,7 +149,6 @@ func SendFolderByPath(peer Peer, self Identity, dirPath string, trk *Tracker) {
 		return
 	}
 
-	// Show the transfer immediately so the UI doesn't "disappear".
 	tr := trk.Start("📁 "+name, totalSize, peer.Name, "send")
 	tr.FilePath = dirPath
 	tr.PeerID = peer.ID
@@ -159,82 +157,220 @@ func SendFolderByPath(peer Peer, self Identity, dirPath string, trk *Tracker) {
 	trk.SetCancel(tr, cancel)
 	defer cancel()
 
-	// ── Phase 1: zip to temp file ──
-	tmp, err := os.CreateTemp("", "swiftdrop-folder-*.zip")
+	// Phase 1: announce folder → get consent + session token.
+	session, err := announceFolderToPeer(ctx, peer, self, name, totalSize, fileCount)
 	if err != nil {
-		trk.Finish(tr, fmt.Errorf("create temp: %w", err))
-		return
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	zw := zip.NewWriter(tmp)
-	walkErr := filepath.Walk(dirPath, func(path string, fi os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(filepath.Dir(dirPath), path)
-		rel = filepath.ToSlash(rel)
-		if fi.IsDir() {
-			_, err := zw.Create(rel + "/")
-			return err
-		}
-		w, err := zw.Create(rel)
-		if err != nil {
-			return err
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = io.Copy(w, f)
-		return err
-	})
-	zw.Close()
-	tmp.Close()
-	if walkErr != nil {
-		trk.Finish(tr, walkErr)
-		return
-	}
-
-	zipInfo, err := os.Stat(tmpPath)
-	if err != nil {
+		log.Printf("sendFolderByPath %q announce failed: %v", name, err)
 		trk.Finish(tr, err)
 		return
 	}
-	zipSize := zipInfo.Size()
 
-	// ── Phase 2: send the temp zip file with known content-length ──
-	tr.Size = zipSize
-	atomic.StoreInt64(&tr.Sent, 0)
+	// Phase 2: walk and send each file in parallel (max 4 concurrent).
 	tr.Status = "sending"
+	atomic.StoreInt64(&tr.Sent, 0)
 
-	zipFile, err := os.Open(tmpPath)
-	if err != nil {
-		trk.Finish(tr, err)
-		return
+	type fileEntry struct {
+		path string
+		rel  string
+		size int64
 	}
-	defer zipFile.Close()
+	var files []fileEntry
+	filepath.Walk(dirPath, func(path string, fi os.FileInfo, walkErr error) error {
+		if walkErr != nil || fi.IsDir() {
+			return nil
+		}
+		if fi.Name() == ".DS_Store" || strings.HasPrefix(fi.Name(), "._") {
+			return nil
+		}
+		rel, _ := filepath.Rel(dirPath, path)
+		rel = filepath.ToSlash(rel)
+		files = append(files, fileEntry{path, rel, fi.Size()})
+		return nil
+	})
+
+	var (
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, 4)
+		errOnce  sync.Once
+		firstErr error
+		okCount  int64
+	)
+	for _, fe := range files {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(fe fileEntry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := sendFolderFileToPeer(ctx, peer, self, fe.rel, fe.path, fe.size, session, tr); err != nil {
+				errOnce.Do(func() { firstErr = err })
+				log.Printf("folder-file %s/%s to %s FAILED: %v", name, fe.rel, peer.Name, err)
+			} else {
+				atomic.AddInt64(&okCount, 1)
+			}
+		}(fe)
+	}
+	wg.Wait()
+
+	// Phase 3: signal folder done (include cancel flag so receiver knows).
+	cancelled := tr.Status == "canceled" || (ctx.Err() != nil)
+	sendFolderDone(ctx, peer, self, name, session, cancelled)
+
+	if firstErr != nil {
+		log.Printf("sendFolderByPath %q to %s: %d/%d sent, first err: %v", name, peer.Name, okCount, len(files), firstErr)
+	} else {
+		log.Printf("sendFolderByPath %q (%d files, %s) to %s OK", name, fileCount, HumanSize(totalSize), peer.Name)
+		Notify("SwiftDrop", fmt.Sprintf("Sent folder %s (%d files) to %s", name, fileCount, peer.Name))
+	}
+	trk.Finish(tr, firstErr)
+}
+
+// announceFolderToPeer sends a lightweight announcement to get consent and
+// a session token before streaming individual files.
+func announceFolderToPeer(ctx context.Context, peer Peer, self Identity, folderName string, totalSize int64, fileCount int) (string, error) {
+	target := fmt.Sprintf("http://%s/inbox", peer.Host)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, http.NoBody)
+	if err != nil {
+		return "", err
+	}
+	req.ContentLength = 0
+	req.Header.Set("X-Filename", folderName)
+	req.Header.Set("X-From", self.Name)
+	req.Header.Set("X-From-ID", self.ID)
+	req.Header.Set("X-File-Size", strconv.FormatInt(totalSize, 10))
+	req.Header.Set("X-Folder-Announce", "true")
+	req.Header.Set("X-Folder-Count", strconv.Itoa(fileCount))
+
+	if key := Pairs.IsPaired(peer.ID); key != nil {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(hmacsha.New, key)
+		mac.Write([]byte(self.ID + "|" + folderName + "|" + ts))
+		req.Header.Set("X-Auth-HMAC", hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Auth-Time", ts)
+	}
+
+	resp, err := TransferClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("folder announce: %d: %s", resp.StatusCode, string(msg))
+	}
+	var result struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("folder announce: bad response: %w", err)
+	}
+	if result.Session == "" {
+		return "", fmt.Errorf("folder announce: empty session")
+	}
+	return result.Session, nil
+}
+
+// sendFolderFileToPeer sends a single file belonging to a folder session.
+func sendFolderFileToPeer(ctx context.Context, peer Peer, self Identity, relPath, filePath string, fileSize int64, session string, tr *Transfer) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Use sanitized relPath (/ → _) as the HMAC filename so each file in
+	// the folder gets a unique HMAC even if base names collide across subdirs.
+	hmacName := strings.ReplaceAll(relPath, "/", "_")
+	target := fmt.Sprintf("http://%s/inbox", peer.Host)
 
 	key := Pairs.IsPaired(peer.ID)
+	var body io.Reader
+	var contentLength int64
+	var encrypted bool
+
 	if key != nil {
 		pr, pw := io.Pipe()
 		go func() {
-			pw.CloseWithError(EncryptStream(pw, &CountingReader{R: zipFile, Tr: tr}, key))
+			pw.CloseWithError(EncryptStream(pw, &CountingReader{R: f, Tr: tr}, key))
 		}()
-		err = SendToPeerWithOpts(ctx, peer, self, name, pr, EncryptedSize(zipSize), zipSize, true, "", true)
+		body = pr
+		contentLength = EncryptedSize(fileSize)
+		encrypted = true
 	} else {
-		err = SendToPeerWithOpts(ctx, peer, self, name, &CountingReader{R: zipFile, Tr: tr}, zipSize, zipSize, false, "", true)
+		body = &CountingReader{R: f, Tr: tr}
+		contentLength = fileSize
 	}
 
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {
-		log.Printf("sendFolderByPath %q to %s FAILED: %v", name, peer.Name, err)
-	} else {
-		log.Printf("sendFolderByPath %q (%d files, %s zip) to %s OK", name, fileCount, HumanSize(zipSize), peer.Name)
-		Notify("SwiftDrop", fmt.Sprintf("Sent folder %s (%d files) to %s", name, fileCount, peer.Name))
+		return err
 	}
-	trk.Finish(tr, err)
+	if contentLength >= 0 {
+		req.ContentLength = contentLength
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Filename", hmacName)
+	req.Header.Set("X-From", self.Name)
+	req.Header.Set("X-From-ID", self.ID)
+	req.Header.Set("X-File-Size", strconv.FormatInt(fileSize, 10))
+	req.Header.Set("X-Folder-Session", session)
+	req.Header.Set("X-Folder-Rel", relPath)
+	if encrypted {
+		req.Header.Set("X-Encrypted", "aes-gcm-v2")
+	}
+
+	if key != nil {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(hmacsha.New, key)
+		mac.Write([]byte(self.ID + "|" + hmacName + "|" + ts))
+		req.Header.Set("X-Auth-HMAC", hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Auth-Time", ts)
+	}
+
+	resp, err := TransferClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("peer returned %d: %s", resp.StatusCode, string(msg))
+	}
+	return nil
+}
+
+// sendFolderDone tells the receiver the folder transfer is complete.
+// Uses a fresh context so the signal reaches the receiver even if the
+// transfer was cancelled on the sender side.
+func sendFolderDone(_ context.Context, peer Peer, self Identity, folderName, session string, cancelled bool) {
+	doneCtx, doneCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer doneCancel()
+
+	target := fmt.Sprintf("http://%s/inbox", peer.Host)
+	req, err := http.NewRequestWithContext(doneCtx, http.MethodPost, target, http.NoBody)
+	if err != nil {
+		return
+	}
+	req.ContentLength = 0
+	req.Header.Set("X-Filename", folderName)
+	req.Header.Set("X-From", self.Name)
+	req.Header.Set("X-From-ID", self.ID)
+	req.Header.Set("X-Folder-Done", session)
+	if cancelled {
+		req.Header.Set("X-Folder-Cancelled", "true")
+	}
+
+	if key := Pairs.IsPaired(peer.ID); key != nil {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(hmacsha.New, key)
+		mac.Write([]byte(self.ID + "|" + folderName + "|" + ts))
+		req.Header.Set("X-Auth-HMAC", hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Auth-Time", ts)
+	}
+
+	resp, err := TransferClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 }
 
 // TransferClient is tuned for throughput on the LAN: keep-alives on, generous
