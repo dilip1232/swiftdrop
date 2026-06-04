@@ -195,7 +195,7 @@
     <div class="stitle">Send files</div>
     <div class="drop" id="drop">
       <div class="big">📤</div>
-      <p><b>Drop files here</b> or click to choose</p>
+      <p><b>Drop files or folders</b> or click to choose</p>
       <p id="dropHint">Pick a device above first</p>
     </div>
     <div class="queue" id="queue"></div>
@@ -432,7 +432,11 @@ function renderQueue() {
     }));
   }
   // Then files staged but not yet sent.
-  for (const f of state.staged) q.appendChild(fileRow({ name: f.name, size: f.size, pct: 0, sub: fmtSize(f.size), label: "Ready" }));
+  for (const f of state.staged) {
+    const icon = f.is_folder ? "📁 " : "";
+    const sub = f.is_folder ? `${f.file_count} file${f.file_count !== 1 ? "s" : ""} · ${fmtSize(f.size)}` : fmtSize(f.size);
+    q.appendChild(fileRow({ name: icon + f.name, size: f.size, pct: 0, sub, label: "Ready" }));
+  }
 }
 
 async function respondTransfer(id, accept) {
@@ -492,8 +496,13 @@ async function sendAll() {
       body: JSON.stringify({ to: state.target, paths })
     });
     if (!res.ok) { toast(await res.text() || "Send failed", true); return; }
+    const folderCount = state.staged.filter(f => f.is_folder).length;
+    const fileCount = state.staged.length - folderCount;
+    const parts = [];
+    if (fileCount > 0) parts.push(`${fileCount} file${fileCount > 1 ? "s" : ""}`);
+    if (folderCount > 0) parts.push(`${folderCount} folder${folderCount > 1 ? "s" : ""}`);
     state.staged = [];
-    toast(`Sending ${paths.length} file${paths.length > 1 ? "s" : ""} to ${tgt.name}`);
+    toast(`Sending ${parts.join(" and ")} to ${tgt.name}`);
     pollTransfers();
   } catch(e) { toast("Send failed: " + (e.message || ""), true); }
   finally { updateSendState(); }
