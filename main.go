@@ -65,16 +65,7 @@ func runApp(port int) {
 	})
 
 	srv.OnQuit = func() { app.Quit() }
-	srv.ConsentHook = func(tr *core.Transfer, from, name string, size int64) {
-		title := fmt.Sprintf("Incoming file from %s", from)
-		msg := fmt.Sprintf("%s (%s)\nAccept this transfer?", name, core.HumanSize(size))
-		accepted := core.ConsentDialog(title, msg)
-		// Non-blocking send: if the web UI already responded, this is a no-op.
-		select {
-		case tr.Decision <- accepted:
-		default:
-		}
-	}
+	// ConsentHook is set after window creation (see below).
 
 	core.StartServer(srv)
 
@@ -135,6 +126,14 @@ func runApp(port int) {
 		data, _ := json.Marshal(infos)
 		window.ExecJS(fmt.Sprintf("window.swiftdropOnDrop && window.swiftdropOnDrop(%s)", string(data)))
 	})
+
+	// Non-blocking consent: show the window so the user can accept/reject
+	// in the web UI.  The notification is already sent by handleInbox.
+	// This replaces the old blocking NSAlert that froze the app.
+	srv.ConsentHook = func(tr *core.Transfer, from, name string, size int64) {
+		window.Show()
+		window.Focus()
+	}
 
 	tray := app.SystemTray.New()
 	tray.SetTemplateIcon(core.TrayIcon())
