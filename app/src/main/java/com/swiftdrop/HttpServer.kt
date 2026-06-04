@@ -264,11 +264,23 @@ class HttpServer : NanoHTTPD(State.PORT) {
                 tr.status = "done"
                 Thread {
                     try {
-                        unzipMediaStore(cr, dest, folderLabel)
-                        cr.delete(dest, null, null) // clean up temp zip
+                        // Delete the temp zip FIRST so its name doesn't collide
+                        // with the folder we're about to extract (both would be
+                        // "Downloads/SwiftDrop/<folderName>").
+                        // Copy the zip bytes to a temp file before deleting.
+                        val tmpFile = java.io.File.createTempFile("sd-unzip-", ".zip", State.appContext.cacheDir)
+                        try {
+                            cr.openInputStream(dest)?.use { inp ->
+                                tmpFile.outputStream().use { out -> inp.copyTo(out, 256 * 1024) }
+                            } ?: throw IllegalStateException("cannot read zip from MediaStore")
+                            cr.delete(dest, null, null) // remove temp zip from Downloads
+                            unzipFromFile(cr, tmpFile, folderLabel)
+                        } finally {
+                            tmpFile.delete()
+                        }
                         Notifier.show(State.appContext, "Received folder $name")
                     } catch (e: Exception) {
-                        android.util.Log.e("SwiftDrop", "unzip $name failed", e)
+                        android.util.Log.e("SwiftDrop", "unzip $name failed: ${e.javaClass.simpleName}: ${e.message}", e)
                         Notifier.show(State.appContext, "Received $name (unzip failed)")
                     }
                 }.start()
@@ -922,13 +934,14 @@ class HttpServer : NanoHTTPD(State.PORT) {
         } catch (_: Exception) { stripped }
     }
 
-    /** Unzips a MediaStore zip entry into individual files under Downloads/SwiftDrop/.
+    /** Unzips a local temp file into MediaStore under Downloads/SwiftDrop/.
      *  The zip entries already include the folder name (e.g. "test/file1.txt"),
      *  so we use Downloads/SwiftDrop as the base — no extra nesting needed. */
-    private fun unzipMediaStore(cr: android.content.ContentResolver, zipUri: Uri, folderName: String) {
+    private fun unzipFromFile(cr: android.content.ContentResolver, zipFile: java.io.File, folderName: String) {
         val basePath = "${Environment.DIRECTORY_DOWNLOADS}/SwiftDrop"
-        cr.openInputStream(zipUri)?.use { input ->
-            val zis = java.util.zip.ZipInputStream(input)
+        android.util.Log.i("SwiftDrop", "unzipFromFile: file=${zipFile.length()} bytes folderName=$folderName")
+        java.io.FileInputStream(zipFile).use { fis ->
+            val zis = java.util.zip.ZipInputStream(fis)
             var entry = zis.nextEntry
             var count = 0
             while (entry != null) {
@@ -968,7 +981,7 @@ class HttpServer : NanoHTTPD(State.PORT) {
             }
             zis.close()
             android.util.Log.i("SwiftDrop", "unzip $folderName: extracted $count files")
-        } ?: throw IllegalStateException("cannot open zip for extraction")
+        }
     }
 }
 
