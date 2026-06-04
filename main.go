@@ -65,16 +65,7 @@ func runApp(port int) {
 	})
 
 	srv.OnQuit = func() { app.Quit() }
-	srv.ConsentHook = func(tr *core.Transfer, from, name string, size int64) {
-		title := fmt.Sprintf("Incoming file from %s", from)
-		msg := fmt.Sprintf("%s (%s)\nAccept this transfer?", name, core.HumanSize(size))
-		accepted := core.ConsentDialog(title, msg)
-		// Non-blocking send: if the web UI already responded, this is a no-op.
-		select {
-		case tr.Decision <- accepted:
-		default:
-		}
-	}
+	// ConsentHook is set after window creation (see below).
 
 	core.StartServer(srv)
 
@@ -109,8 +100,8 @@ func runApp(port int) {
 	srv.Pick = func() ([]string, error) {
 		d := app.Dialog.OpenFile()
 		d.CanChooseFiles(true)
-		d.CanChooseDirectories(false)
-		d.SetTitle("Choose files to send")
+		d.CanChooseDirectories(true)
+		d.SetTitle("Choose files or folders to send")
 		paths, err := d.PromptForMultipleSelection()
 		// Re-show the window after the dialog closes.
 		window.Show()
@@ -135,6 +126,19 @@ func runApp(port int) {
 		data, _ := json.Marshal(infos)
 		window.ExecJS(fmt.Sprintf("window.swiftdropOnDrop && window.swiftdropOnDrop(%s)", string(data)))
 	})
+
+	// Native macOS Accept/Reject dialog. ConsentDialog blocks until the user
+	// responds, then feeds tr.Decision so the server handler unblocks.
+	srv.ConsentHook = func(tr *core.Transfer, from, name string, size int64) {
+		sizeStr := core.HumanSize(size)
+		title := fmt.Sprintf("%s wants to send you a file", from)
+		body := fmt.Sprintf("%s (%s)", name, sizeStr)
+		accepted := core.ConsentDialog(title, body)
+		select {
+		case tr.Decision <- accepted:
+		default:
+		}
+	}
 
 	tray := app.SystemTray.New()
 	tray.SetTemplateIcon(core.TrayIcon())
@@ -190,7 +194,7 @@ func runHeadless(port int) {
 	core.StartNetworkWatcher(context.Background(), id, reg)
 	core.StartKeepalive(context.Background(), reg, id)
 	log.Printf("SwiftDrop %q listening on :%d (headless)", id.Name, id.Port)
-	if err := http.Serve(ln, srv.Handler()); err != nil {
+	if err := http.Serve(ln, srv.LANHandler()); err != nil {
 		log.Fatal(err)
 	}
 	os.Exit(0)
