@@ -27,11 +27,14 @@ API — platform shells only add native UI wiring and system integration.
 - **Manual peers** — add devices by IP address; persisted and probed like discovered peers
 
 ### Pairing & Security
-- **PIN-based pairing** — 6-digit PIN exchange; both devices derive a shared AES-256 key
-- **QR code pairing** — one device generates a QR code containing a one-time token; the other scans it to pair instantly
+- **SPAKE2 PIN pairing** — 6-digit PIN exchange using SPAKE2 (Password-Authenticated Key Exchange) over P-256; PIN never crosses the wire; both devices derive a shared AES-256 key with mutual confirmation
+- **Two-phase PAKE** — server holds exchange state without committing until the client proves it derived the correct key; wrong PINs are rejected cleanly (up to 3 retries before PIN is voided)
+- **QR code pairing** — one device generates a QR code containing a one-time token (256-bit entropy); the other scans it to pair instantly
 - **Bilateral unpairing** — unpairing on one device notifies the remote peer to also unpair
 - **Persistent key store** — paired keys stored on disk (macOS: Keychain, Windows: DPAPI, others: `<UserConfigDir>/SwiftDrop/paired-keys.json`)
 - **API token protection** — all UI-facing `/api/*` endpoints require a per-session token; only the embedded UI (loopback) can obtain it
+- **HMAC replay protection** — `/inbox` requests include an HMAC signature with a timestamp; a replay cache rejects duplicates within the 5-minute window
+- **Route separation** — peer-facing routes (LANHandler) are isolated from UI routes (Handler); headless mode only exposes peer-facing routes
 
 ### Chat
 - **Per-device chat** — send and receive text messages with individual paired peers
@@ -61,7 +64,8 @@ All endpoints are served on port **53317** TCP.
 | GET | `/api/me` | This device's identity (id, name, platform, port) |
 | GET | `/health` | Health check (returns `ok`) |
 | POST | `/api/peers/add` | Announce presence: `{"host":"ip:port"}` |
-| POST | `/api/pair/claim` | Claim a PIN: `{"pin":"...","id":"...","name":"..."}` |
+| POST | `/api/pair/claim` | SPAKE2 Phase 1: `{"pake_msg":"...","id":"...","name":"..."}` |
+| POST | `/api/pair/pake-confirm` | SPAKE2 Phase 2: `{"pake_confirm":"...","id":"..."}` |
 | POST | `/api/pair/qr-claim` | Claim a QR token: `{"token":"...","id":"...","name":"..."}` |
 | POST | `/api/pair/remote-unpair` | Notify of remote unpair |
 
@@ -126,3 +130,27 @@ replace swiftdrop-core => ../swiftdrop-core
 ```
 
 CI workflows clone core as a sibling directory so the replace works in CI too.
+
+## Security & Trust Model
+
+SwiftDrop is a **LAN-only** file transfer tool. It is designed to be safe on networks you trust (home, office). It is not designed for hostile networks or use over the public internet.
+
+### What SwiftDrop protects against
+- **Unpaired senders** — files are only accepted from paired devices; unpaired requests are rejected
+- **PIN interception** — PIN-based pairing uses SPAKE2 (a Password-Authenticated Key Exchange); the PIN never crosses the wire
+- **Transfer eavesdropping** — all transfers between paired devices are encrypted with AES-256-GCM using the shared pairing key
+- **Transfer tampering** — GCM provides authenticated encryption; tampered data is rejected
+- **HMAC replay** — `/inbox` requests include a timestamped HMAC; a replay cache rejects duplicates
+- **Token theft** — the API token is only served to loopback; LAN peers cannot obtain it
+
+### What SwiftDrop does NOT protect against
+- **Active MITM during QR pairing** — the QR token travels in cleartext in the claim request; an active attacker during the brief scan window could intercept it. PIN pairing (SPAKE2) is resistant to this.
+- **Compromised device on the LAN** — if an attacker controls a device on your network, they can observe mDNS announcements and attempt to pair (but cannot succeed without the PIN)
+- **Timing side-channels on SPAKE2** — the current implementation uses P-256 big.Int arithmetic which is not constant-time; this is a theoretical concern for an on-LAN attacker measuring pairing timing
+
+### Cryptographic note
+The SPAKE2 implementation is hand-rolled over Go's `crypto/elliptic` (P-256) and a matching Kotlin implementation for Android. The math is correct (asymmetric SPAKE2 with hash-to-curve, key derivation, and mutual confirmation MAC), but it has not been independently audited. For a production deployment, consider replacing it with a maintained PAKE library or commissioning an external review.
+
+## Privacy
+
+SwiftDrop collects **no data**. There are no analytics, no telemetry, no cloud services, and no network requests outside your LAN. All transfers are direct device-to-device. Pairing keys are stored locally on each device and never leave it.
