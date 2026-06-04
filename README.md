@@ -16,6 +16,9 @@ API — platform shells only add native UI wiring and system integration.
 - **Retry support** — failed/canceled outbound sends can be retried; file path and peer ID are preserved on the transfer
 - **No file size cap** — transfers of any size work; no buffering, no temp files
 - **Receiver consent** — incoming transfers require explicit accept/reject via `ConsentHook`; the remote peer is notified of the decision
+- **Folder transfer** — send entire folders file-by-file with parallel streaming (up to 4 concurrent files); receiver reconstructs the original directory structure
+- **Folder cancellation** — cancelling a folder mid-transfer notifies the receiver, which shows how many files were actually received
+- **Duplicate name handling** — receiving a folder or file with a name that already exists automatically creates a unique copy (e.g. "Photos (1)") instead of overwriting
 - **Pause/resume** — in-flight transfers can be paused and resumed; the remote peer is signaled so its UI reflects the paused state
 - **HMAC authentication** — `/inbox` requests from paired devices include an HMAC signature; receiver verifies authenticity before writing
 
@@ -47,7 +50,8 @@ API — platform shells only add native UI wiring and system integration.
 - **Retryable flag** — failed outbound sends are marked retryable in the API response
 
 ### Platform Abstractions
-- **Notifications** — `Notify()` with platform-specific implementations (macOS: `NSUserNotification` via cgo, Windows: PowerShell toast)
+- **Notifications** — `Notify()` with platform-specific implementations (macOS: `UNUserNotificationCenter` via cgo, Windows: PowerShell toast)
+- **Consent dialog** — macOS consent alert floats above all windows and stays visible even when notifications arrive or the app loses focus
 - **Open folder** — `OpenFolder()` opens the download directory (macOS: `open`, Windows: `explorer.exe`)
 - **Disk free** — `DiskFree()` checks available space (macOS: `statfs`, Windows: `GetDiskFreeSpaceExW`)
 - **Tray icon** — `TrayIcon()` generates a menu-bar/system-tray icon at runtime
