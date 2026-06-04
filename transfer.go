@@ -1,6 +1,7 @@
 package core
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/hmac"
 	hmacsha "crypto/sha256"
@@ -41,25 +42,51 @@ func (c *CountingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// FileInfo is a staged file the UI shows before sending.
+// FileInfo is a staged file or folder the UI shows before sending.
 type FileInfo struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
-	Size int64  `json:"size"`
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+	IsFolder  bool   `json:"is_folder,omitempty"`
+	FileCount int    `json:"file_count,omitempty"`
 }
 
-// FileInfos stats each path, skipping anything that can't be read or is a
-// directory, so the UI only ever stages real, sendable files.
+// FileInfos stats each path. Directories are included with their total size
+// and a "folder" flag so the UI can stage them for folder transfer.
 func FileInfos(paths []string) []FileInfo {
 	out := make([]FileInfo, 0, len(paths))
 	for _, p := range paths {
 		fi, err := os.Stat(p)
-		if err != nil || fi.IsDir() {
+		if err != nil {
 			continue
 		}
-		out = append(out, FileInfo{Path: p, Name: filepath.Base(p), Size: fi.Size()})
+		if fi.IsDir() {
+			totalSize, fileCount := dirStats(p)
+			out = append(out, FileInfo{
+				Path:      p,
+				Name:      filepath.Base(p),
+				Size:      totalSize,
+				IsFolder:  true,
+				FileCount: fileCount,
+			})
+		} else {
+			out = append(out, FileInfo{Path: p, Name: filepath.Base(p), Size: fi.Size()})
+		}
 	}
 	return out
+}
+
+// dirStats walks a directory and returns the total size and file count.
+func dirStats(root string) (totalSize int64, fileCount int) {
+	filepath.Walk(root, func(_ string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() {
+			return nil
+		}
+		totalSize += fi.Size()
+		fileCount++
+		return nil
+	})
+	return
 }
 
 // SendFileByPath is the fast path: Go opens the file itself and streams it
@@ -96,11 +123,11 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 		go func() {
 			pw.CloseWithError(EncryptStream(pw, &CountingReader{R: f, Tr: tr}, key))
 		}()
-		err = SendToPeerWithOpts(ctx, peer, self, name, pr, EncryptedSize(fi.Size()), fi.Size(), true)
+		err = SendToPeerWithOpts(ctx, peer, self, name, pr, EncryptedSize(fi.Size()), fi.Size(), true, "")
 	} else {
 		// Unencrypted fallback (handleSendPath already rejects unpaired peers).
 		var body io.Reader = &CountingReader{R: f, Tr: tr}
-		err = SendToPeerWithOpts(ctx, peer, self, name, body, fi.Size(), fi.Size(), false)
+		err = SendToPeerWithOpts(ctx, peer, self, name, body, fi.Size(), fi.Size(), false, "")
 	}
 
 	if err != nil {
@@ -108,6 +135,80 @@ func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
 	} else {
 		log.Printf("sendFileByPath %q to %s OK (%s)", name, peer.Name, HumanSize(fi.Size()))
 		Notify("SwiftDrop", fmt.Sprintf("Sent %s (%s) to %s", name, HumanSize(fi.Size()), peer.Name))
+	}
+	trk.Finish(tr, err)
+}
+
+// SendFolderByPath zips a directory on-the-fly and streams the zip to the peer
+// as a single transfer. The receiver detects X-Folder and auto-unzips.
+func SendFolderByPath(peer Peer, self Identity, dirPath string, trk *Tracker) {
+	name := filepath.Base(dirPath)
+	totalSize, fileCount := dirStats(dirPath)
+	if fileCount == 0 {
+		trk.Finish(trk.Start(name, 0, peer.Name, "send"), fmt.Errorf("empty folder"))
+		return
+	}
+
+	tr := trk.Start(name, totalSize, peer.Name, "send")
+	tr.FilePath = dirPath
+	tr.PeerID = peer.ID
+	ctx, cancel := context.WithCancel(context.Background())
+	trk.SetCancel(tr, cancel)
+	defer cancel()
+
+	// Pipe: zip writer → reader. The zip is streamed, no temp file.
+	pr, pw := io.Pipe()
+	go func() {
+		zw := zip.NewWriter(pw)
+		err := filepath.Walk(dirPath, func(path string, fi os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			// Relative path inside the zip preserves folder structure.
+			rel, _ := filepath.Rel(filepath.Dir(dirPath), path)
+			rel = filepath.ToSlash(rel)
+			if fi.IsDir() {
+				_, err := zw.Create(rel + "/")
+				return err
+			}
+			w, err := zw.Create(rel)
+			if err != nil {
+				return err
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(w, &CountingReader{R: f, Tr: tr})
+			return err
+		})
+		if err != nil {
+			zw.Close()
+			pw.CloseWithError(err)
+			return
+		}
+		pw.CloseWithError(zw.Close())
+	}()
+
+	key := Pairs.IsPaired(peer.ID)
+	var err error
+	if key != nil {
+		// Encrypted: zip stream → encrypt → send.
+		encPr, encPw := io.Pipe()
+		go func() {
+			encPw.CloseWithError(EncryptStream(encPw, pr, key))
+		}()
+		err = SendToPeerWithOpts(ctx, peer, self, name, encPr, -1, totalSize, true, "", true)
+	} else {
+		err = SendToPeerWithOpts(ctx, peer, self, name, pr, -1, totalSize, false, "", true)
+	}
+
+	if err != nil {
+		log.Printf("sendFolderByPath %q to %s FAILED: %v", name, peer.Name, err)
+	} else {
+		log.Printf("sendFolderByPath %q (%d files, %s) to %s OK", name, fileCount, HumanSize(totalSize), peer.Name)
+		Notify("SwiftDrop", fmt.Sprintf("Sent folder %s (%d files, %s) to %s", name, fileCount, HumanSize(totalSize), peer.Name))
 	}
 	trk.Finish(tr, err)
 }
@@ -132,7 +233,7 @@ var TransferClient = &http.Client{
 // buffering the whole file. contentLength may be -1 if unknown (chunked).
 // When encrypted is true, the X-Encrypted header is set so the receiver knows
 // to decrypt. Canceling ctx aborts the in-flight request.
-func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename string, body io.Reader, contentLength int64, originalSize int64, encrypted bool, sha256hash ...string) error {
+func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename string, body io.Reader, contentLength int64, originalSize int64, encrypted bool, sha256hash string, isFolder ...bool) error {
 	target := fmt.Sprintf("http://%s/inbox", peer.Host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {
@@ -151,8 +252,11 @@ func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename 
 	if encrypted {
 		req.Header.Set("X-Encrypted", "aes-gcm-v2")
 	}
-	if len(sha256hash) > 0 && sha256hash[0] != "" {
-		req.Header.Set("X-SHA256", sha256hash[0])
+	if sha256hash != "" {
+		req.Header.Set("X-SHA256", sha256hash)
+	}
+	if len(isFolder) > 0 && isFolder[0] {
+		req.Header.Set("X-Folder", "zip")
 	}
 	// HMAC sender authentication: sign fromID|filename|timestamp with shared key.
 	if key := Pairs.IsPaired(peer.ID); key != nil {

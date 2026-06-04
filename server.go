@@ -1,6 +1,7 @@
 package core
 
 import (
+	"archive/zip"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -308,8 +309,12 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Receiver consent: block until the user accepts or 60s timeout ──
-	tr := s.Trk.StartPending(name, trackSize, from)
-	Notify("SwiftDrop", fmt.Sprintf("%s wants to send %s (%s)", from, name, HumanSize(trackSize)))
+	displayName := name
+	if r.Header.Get("X-Folder") == "zip" {
+		displayName = "📁 " + name
+	}
+	tr := s.Trk.StartPending(displayName, trackSize, from)
+	Notify("SwiftDrop", fmt.Sprintf("%s wants to send %s (%s)", from, displayName, HumanSize(trackSize)))
 	if s.ConsentHook != nil {
 		go s.ConsentHook(tr, from, name, trackSize)
 	}
@@ -377,12 +382,28 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		}
 		n := atomic.LoadInt64(&tr.Sent)
 		closeErr := f.Close()
-		s.Trk.Finish(tr, nil)
 		if closeErr != nil {
 			log.Printf("inbox close %s: %v", dest, closeErr)
 		}
-		log.Printf("received %q (%s, encrypted) from %s", filepath.Base(dest), HumanSize(n), from)
-		Notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), HumanSize(n), from))
+		// Auto-unzip folder transfers.
+		if r.Header.Get("X-Folder") == "zip" {
+			folderDest := UniquePath(filepath.Join(dlDir, strings.TrimSuffix(name, filepath.Ext(name))))
+			if err := unzipFile(dest, folderDest); err != nil {
+				s.Trk.Finish(tr, fmt.Errorf("unzip: %w", err))
+				os.Remove(dest)
+				http.Error(w, "unzip failed", http.StatusInternalServerError)
+				log.Printf("inbox unzip %s: %v", dest, err)
+				return
+			}
+			os.Remove(dest) // clean up temp zip
+			s.Trk.Finish(tr, nil)
+			log.Printf("received folder %q (%s, encrypted) from %s", filepath.Base(folderDest), HumanSize(n), from)
+			Notify("SwiftDrop", fmt.Sprintf("Received folder %s (%s) from %s", filepath.Base(folderDest), HumanSize(n), from))
+		} else {
+			s.Trk.Finish(tr, nil)
+			log.Printf("received %q (%s, encrypted) from %s", filepath.Base(dest), HumanSize(n), from)
+			Notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), HumanSize(n), from))
+		}
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, "ok")
 		return
@@ -415,11 +436,69 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.Trk.Finish(tr, nil)
-	log.Printf("received %q (%s) from %s", filepath.Base(dest), HumanSize(n), from)
-	Notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), HumanSize(n), from))
+	// Auto-unzip folder transfers.
+	if r.Header.Get("X-Folder") == "zip" {
+		folderDest := UniquePath(filepath.Join(dlDir, strings.TrimSuffix(name, filepath.Ext(name))))
+		if err := unzipFile(dest, folderDest); err != nil {
+			s.Trk.Finish(tr, fmt.Errorf("unzip: %w", err))
+			os.Remove(dest)
+			http.Error(w, "unzip failed", http.StatusInternalServerError)
+			log.Printf("inbox unzip %s: %v", dest, err)
+			return
+		}
+		os.Remove(dest)
+		s.Trk.Finish(tr, nil)
+		log.Printf("received folder %q (%s) from %s", filepath.Base(folderDest), HumanSize(n), from)
+		Notify("SwiftDrop", fmt.Sprintf("Received folder %s (%s) from %s", filepath.Base(folderDest), HumanSize(n), from))
+	} else {
+		s.Trk.Finish(tr, nil)
+		log.Printf("received %q (%s) from %s", filepath.Base(dest), HumanSize(n), from)
+		Notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), HumanSize(n), from))
+	}
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, "ok")
+}
+
+// unzipFile extracts a zip archive to destDir, preserving directory structure.
+// Guards against zip-slip by verifying all paths stay under destDir.
+func unzipFile(zipPath, destDir string) error {
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+
+	for _, f := range zr.File {
+		target := filepath.Join(destDir, filepath.FromSlash(f.Name))
+		// Zip-slip guard.
+		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), filepath.Clean(destDir)+string(os.PathSeparator)) &&
+			filepath.Clean(target) != filepath.Clean(destDir) {
+			return fmt.Errorf("zip-slip: %s", f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(target, 0755)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.Create(target)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		_, err = io.Copy(out, rc)
+		rc.Close()
+		out.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, _ *http.Request) {
@@ -520,7 +599,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		pw.CloseWithError(EncryptStream(pw, r.Body, key))
 	}()
-	if err := SendToPeerWithOpts(r.Context(), peer, s.ID, name, pr, EncryptedSize(r.ContentLength), r.ContentLength, true); err != nil {
+	if err := SendToPeerWithOpts(r.Context(), peer, s.ID, name, pr, EncryptedSize(r.ContentLength), r.ContentLength, true, ""); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		log.Printf("send to %s: %v", peer.Name, err)
 		return
@@ -556,7 +635,15 @@ func (s *Server) handleSendPath(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range body.Paths {
 		path := p
-		go SendFileByPath(peer, s.ID, path, s.Trk)
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if fi.IsDir() {
+			go SendFolderByPath(peer, s.ID, path, s.Trk)
+		} else {
+			go SendFileByPath(peer, s.ID, path, s.Trk)
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, "ok")
