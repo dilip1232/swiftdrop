@@ -852,50 +852,47 @@ func (s *Server) handleQRClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Token  string `json:"token"`
-		ID     string `json:"id"`
-		Name   string `json:"name"`
-		PubKey string `json:"pub_key"` // X25519 public key (hex), empty = legacy
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		PAKEMsg string `json:"pake_msg"` // SPAKE2 client message (hex)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	key, ok := Pairs.ClaimQRToken(req.Token, req.ID)
-	if !ok {
-		http.Error(w, "invalid or expired token", http.StatusForbidden)
+	if req.PAKEMsg == "" {
+		http.Error(w, "pake_msg required", http.StatusBadRequest)
 		return
 	}
-	log.Printf("QR pairing accepted for %s (%s)", req.Name, req.ID)
-	// X25519 key agreement: wrap the AES key.
-	if req.PubKey != "" {
-		claimerPub, err := hex.DecodeString(req.PubKey)
-		if err != nil || len(claimerPub) != 32 {
-			http.Error(w, "invalid public key", http.StatusBadRequest)
-			return
-		}
-		priv, pub, err := X25519KeyPair()
-		if err != nil {
-			http.Error(w, "key generation failed", http.StatusInternalServerError)
-			return
-		}
-		shared, err := X25519SharedSecret(priv, claimerPub)
-		if err != nil {
-			http.Error(w, "key agreement failed", http.StatusInternalServerError)
-			return
-		}
-		wrapped, err := AESGCMWrap(shared, key)
-		if err != nil {
-			http.Error(w, "wrap failed", http.StatusInternalServerError)
-			return
-		}
-		WriteJSON(w, map[string]string{
-			"encrypted_key": hex.EncodeToString(wrapped),
-			"pub_key":       hex.EncodeToString(pub),
-		})
+	clientMsg, err := hex.DecodeString(req.PAKEMsg)
+	if err != nil || len(clientMsg) == 0 {
+		http.Error(w, "invalid pake_msg", http.StatusBadRequest)
 		return
 	}
-	WriteJSON(w, map[string]string{"key": hex.EncodeToString(key)})
+	// Use the QR token as the SPAKE2 password (256-bit entropy).
+	token, qrKey := Pairs.QRTokenAndKey()
+	if token == "" || qrKey == nil {
+		http.Error(w, "no pending QR pairing", http.StatusForbidden)
+		return
+	}
+	msgB, confirm, spakeKey, err := SPAKE2ServerFinish(token, clientMsg)
+	if err != nil {
+		http.Error(w, "SPAKE2 failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	wrapped, err := AESGCMWrap(spakeKey, qrKey)
+	if err != nil {
+		http.Error(w, "wrap failed", http.StatusInternalServerError)
+		return
+	}
+	// Hold — do NOT commit yet. Wait for client confirmation in Phase 2.
+	Pairs.HoldPAKE(req.ID, spakeKey, qrKey)
+	log.Printf("QR SPAKE2 exchange with %s (%s) — awaiting confirmation", req.Name, req.ID)
+	WriteJSON(w, map[string]string{
+		"pake_msg":      hex.EncodeToString(msgB),
+		"pake_confirm":  hex.EncodeToString(confirm),
+		"encrypted_key": hex.EncodeToString(wrapped),
+	})
 }
 
 // notifyPeerSignal sends a pause/resume signal to the receiving peer so their

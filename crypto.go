@@ -3,7 +3,6 @@ package core
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ecdh"
 	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
@@ -158,6 +157,9 @@ func (ps *PairStore) ConfirmPAKE(peerID string, clientConfirm []byte) bool {
 	ps.pakeSpakeKey = nil
 	ps.pakePairKey = nil
 	ps.pakePeerID = ""
+	// Also consume QR token if this was a QR-based pairing.
+	ps.qrToken = ""
+	ps.qrKey = nil
 	ps.Save()
 	return true
 }
@@ -183,20 +185,15 @@ func (ps *PairStore) GenerateQRToken() string {
 	return ps.qrToken
 }
 
-// ClaimQRToken verifies a peer's token. On success returns the shared key and
-// stores it under peerID.
-func (ps *PairStore) ClaimQRToken(token, peerID string) ([]byte, bool) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	if ps.qrToken == "" || token != ps.qrToken || time.Now().After(ps.qrExp) {
-		return nil, false
+// QRTokenAndKey returns the current QR token and its AES key if still valid.
+// Does NOT consume the token — that happens in ConfirmPAKE.
+func (ps *PairStore) QRTokenAndKey() (string, []byte) {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	if ps.qrToken == "" || time.Now().After(ps.qrExp) {
+		return "", nil
 	}
-	key := ps.qrKey
-	ps.keys[peerID] = key
-	ps.qrToken = ""
-	ps.qrKey = nil
-	ps.Save()
-	return key, true
+	return ps.qrToken, ps.qrKey
 }
 
 // StoreKey persists a shared key received from a successful pairing (caller
@@ -482,27 +479,6 @@ func (rc *ReplayCache) cleanup() {
 		}
 		rc.mu.Unlock()
 	}
-}
-
-// ── X25519 key exchange (#27) ────────────────────────────────────────────────
-
-// X25519KeyPair generates a new X25519 ephemeral keypair for key exchange.
-func X25519KeyPair() (*ecdh.PrivateKey, []byte, error) {
-	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	return priv, priv.PublicKey().Bytes(), nil
-}
-
-// X25519SharedSecret derives a shared secret from our private key and the
-// peer's X25519 public key.
-func X25519SharedSecret(priv *ecdh.PrivateKey, peerPub []byte) ([]byte, error) {
-	pub, err := ecdh.X25519().NewPublicKey(peerPub)
-	if err != nil {
-		return nil, err
-	}
-	return priv.ECDH(pub)
 }
 
 // AESGCMWrap encrypts plaintext under a 32-byte key (one-shot AES-256-GCM).
