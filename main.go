@@ -190,7 +190,7 @@ func runHeadless(port int) {
 	core.StartNetworkWatcher(context.Background(), id, reg)
 	core.StartKeepalive(context.Background(), reg, id)
 	log.Printf("SwiftDrop %q listening on :%d (headless)", id.Name, id.Port)
-	if err := http.Serve(ln, srv.Handler()); err != nil {
+	if err := http.Serve(ln, srv.LANHandler()); err != nil {
 		log.Fatal(err)
 	}
 	os.Exit(0)
