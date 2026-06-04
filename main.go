@@ -109,8 +109,8 @@ func runApp(port int) {
 	srv.Pick = func() ([]string, error) {
 		d := app.Dialog.OpenFile()
 		d.CanChooseFiles(true)
-		d.CanChooseDirectories(false)
-		d.SetTitle("Choose files to send")
+		d.CanChooseDirectories(true)
+		d.SetTitle("Choose files or folders to send")
 		paths, err := d.PromptForMultipleSelection()
 		// Re-show the window after the dialog closes.
 		window.Show()
