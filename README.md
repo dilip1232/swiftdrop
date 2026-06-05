@@ -43,7 +43,7 @@ Most file transfer apps are slow, bloated, or require accounts you don't want to
 ### 📁 Files & Folders
 Drag and drop any file or entire folder. Send everything in one go — no file size limits.
 
-### � Clipboard & Text Sharing
+### 💬 Clipboard & Text Sharing
 Instantly share clipboard text, links, code snippets, or quick messages between devices. No app switching needed.
 
 ### ⏸️ Pause & Resume
