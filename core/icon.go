@@ -17,7 +17,7 @@ func TrayIcon() []byte {
 // TrayIconColored renders a colored 64×64 version of the tray icon for Windows.
 // Blue arrows on a rounded blue background, crisp on high-DPI taskbars.
 func TrayIconColored() []byte {
-	bg := color.RGBA{30, 100, 220, 255}
+	bg := color.RGBA{99, 102, 241, 255}
 	fg := color.RGBA{255, 255, 255, 255}
 	return renderIcon(64, fg, &bg)
 }
@@ -25,7 +25,7 @@ func TrayIconColored() []byte {
 // AppIcon renders a 256×256 colored icon suitable for the window title bar and
 // taskbar on Windows.
 func AppIcon() []byte {
-	bg := color.RGBA{30, 100, 220, 255}
+	bg := color.RGBA{99, 102, 241, 255}
 	fg := color.RGBA{255, 255, 255, 255}
 	return renderIcon(256, fg, &bg)
 }
