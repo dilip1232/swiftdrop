@@ -30,7 +30,7 @@ Most file transfer apps are slow, bloated, or cap your speed well below what you
 
 **SwiftDrop sends everything directly** between your devices over your local network — at the raw speed your LAN allows. A 1 GB video? About 15 seconds.
 
-> 🚀 **70–80 MB/s** over WiFi — that's a full HD movie in under 15 seconds.
+> 🚀 **70–80 MB/s** real-world transfers — SwiftDrop maxes out whatever link you give it.
 
 ---
 
