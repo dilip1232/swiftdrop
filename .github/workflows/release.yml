@@ -49,12 +49,12 @@ jobs:
 
       - name: Rename DMG with version
         working-directory: mac
-        run: mv SwiftDrop.dmg SwiftDrop-${{ needs.version.outputs.version_num }}.dmg
+        run: mv SwiftDrop.dmg SwiftDrop-macOS-${{ needs.version.outputs.version_num }}.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: mac-dmg
-          path: mac/SwiftDrop-*.dmg
+          path: mac/SwiftDrop-macOS-*.dmg
 
   # ── Build Windows EXE ──
   build-windows:
@@ -240,12 +240,12 @@ jobs:
             -Pswiftdrop.keyPassword="${{ secrets.KEYSTORE_PASSWORD || 'swiftdrop123' }}"
 
       - name: Rename APK with version
-        run: cp android/app/build/outputs/apk/release/app-release.apk SwiftDrop-${{ needs.version.outputs.version_num }}.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk SwiftDrop-Android-${{ needs.version.outputs.version_num }}.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: SwiftDrop-*.apk
+          path: SwiftDrop-Android-*.apk
 
   # ── Create tag & GitHub Release with all assets ──
   release:
