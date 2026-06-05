@@ -24,3 +24,7 @@ android/.cxx/
 android/*.apk
 android/*.keystore
 android/*.jks
+
+# === Signing keystores (root level) ===
+*.jks
+*.keystore

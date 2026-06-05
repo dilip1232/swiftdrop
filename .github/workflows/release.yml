@@ -207,15 +207,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Generate signing keystore
+      - name: Decode signing keystore
         run: |
-          keytool -genkeypair \
-            -keystore release-keystore.jks \
-            -alias swiftdrop \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass "${{ secrets.KEYSTORE_PASSWORD || 'swiftdrop123' }}" \
-            -keypass "${{ secrets.KEYSTORE_PASSWORD || 'swiftdrop123' }}" \
-            -dname "CN=SwiftDrop, OU=Dev, O=SwiftDrop, L=Unknown, ST=Unknown, C=US"
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release-keystore.jks
+          # Verify the keystore is valid
+          keytool -list -keystore release-keystore.jks \
+            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" -alias swiftdrop
 
       - name: Set version from tag
         working-directory: android
@@ -235,9 +232,9 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon \
             -Pswiftdrop.storeFile="$(pwd)/../release-keystore.jks" \
-            -Pswiftdrop.storePassword="${{ secrets.KEYSTORE_PASSWORD || 'swiftdrop123' }}" \
+            -Pswiftdrop.storePassword="${{ secrets.KEYSTORE_PASSWORD }}" \
             -Pswiftdrop.keyAlias=swiftdrop \
-            -Pswiftdrop.keyPassword="${{ secrets.KEYSTORE_PASSWORD || 'swiftdrop123' }}"
+            -Pswiftdrop.keyPassword="${{ secrets.KEYSTORE_PASSWORD }}"
 
       - name: Rename APK with version
         run: cp android/app/build/outputs/apk/release/app-release.apk SwiftDrop-Android-${{ needs.version.outputs.version_num }}.apk

@@ -1,0 +1,43 @@
+version: 2
+updates:
+  # Go modules — core
+  - package-ecosystem: gomod
+    directory: /core
+    schedule:
+      interval: weekly
+    labels: [dependencies, go]
+
+  # Go modules — mac
+  - package-ecosystem: gomod
+    directory: /mac
+    schedule:
+      interval: weekly
+    labels: [dependencies, go]
+
+  # Go modules — windows
+  - package-ecosystem: gomod
+    directory: /windows
+    schedule:
+      interval: weekly
+    labels: [dependencies, go]
+
+  # Go modules — linux
+  - package-ecosystem: gomod
+    directory: /linux
+    schedule:
+      interval: weekly
+    labels: [dependencies, go]
+
+  # Gradle — android
+  - package-ecosystem: gradle
+    directory: /android
+    schedule:
+      interval: weekly
+    labels: [dependencies, android]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies, ci]
