@@ -26,7 +26,7 @@
 
 ## 🤔 Why SwiftDrop?
 
-Most file transfer apps are slow, bloated, or require accounts you don't want to create.
+Most file transfer apps are slow, bloated, or cap your speed well below what your hardware can do.
 
 **SwiftDrop sends everything directly** between your devices over your local network — at the raw speed your LAN allows. A 1 GB video? About 15 seconds.
 
