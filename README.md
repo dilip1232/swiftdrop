@@ -36,43 +36,18 @@ Most file transfer apps are slow, bloated, or cap your speed well below what you
 
 ## ✨ Features
 
-<table>
-<tr>
-<td width="50%">
-
-### 📁 Files & Folders
-Drag and drop any file or entire folder. Send everything in one go — no file size limits.
-
-### 💬 Clipboard & Text Sharing
-Instantly share clipboard text, links, code snippets, or quick messages between devices. No app switching needed.
-
-### ⏸️ Pause & Resume
-Pause a transfer mid-stream and pick up exactly where you left off.
-
-### 🛡️ Receiver Consent
-Nothing downloads without your permission. Accept or reject every incoming file.
-
-</td>
-<td width="50%">
-
-### 🔐 End-to-End Encrypted
-AES-256-GCM encryption on every transfer. SPAKE2 pairing means your PIN never crosses the wire.
-
-### � QR Code Pairing
-Scan a QR code to pair devices instantly — no typing, no codes. Works across platforms in seconds.
-
-### �🔍 Auto-Discovery
-Devices find each other automatically via mDNS. LAN subnet scanning kicks in as a fallback.
-
-### 📱 Cross-Platform
-macOS menu bar · Windows system tray · Android native — all talk to each other seamlessly.
-
-### 🌐 No Internet Required
-Works entirely on your local network. No accounts, no sign-ups, no subscriptions.
-
-</td>
-</tr>
-</table>
+| | |
+|---|---|
+| **📁 Files & Folders** | **🔐 End-to-End Encrypted** |
+| Drag and drop any file or entire folder. No file size limits. | AES-256-GCM on every transfer. SPAKE2 pairing — your PIN never crosses the wire. |
+| **💬 Clipboard & Text Sharing** | **🔗 QR Code Pairing** |
+| Instantly share clipboard text, links, code snippets, or quick messages between devices. | Scan a QR code to pair devices instantly — no typing, no codes. |
+| **⏸️ Pause & Resume** | **🔍 Auto-Discovery** |
+| Pause a transfer mid-stream and pick up exactly where you left off. | Devices find each other via mDNS. LAN subnet scanning as fallback. |
+| **�️ Receiver Consent** | **📱 Cross-Platform** |
+| Nothing downloads without your permission. Accept or reject every incoming file. | macOS menu bar · Windows system tray · Android native — all seamless. |
+| **🌐 No Internet Required** | |
+| Works entirely on your local network. No accounts, no sign-ups, no subscriptions. | |
 
 ---
 
