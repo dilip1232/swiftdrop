@@ -58,7 +58,10 @@ Nothing downloads without your permission. Accept or reject every incoming file.
 ### 🔐 End-to-End Encrypted
 AES-256-GCM encryption on every transfer. SPAKE2 pairing means your PIN never crosses the wire.
 
-### 🔍 Auto-Discovery
+### � QR Code Pairing
+Scan a QR code to pair devices instantly — no typing, no codes. Works across platforms in seconds.
+
+### �🔍 Auto-Discovery
 Devices find each other automatically via mDNS. LAN subnet scanning kicks in as a fallback.
 
 ### 📱 Cross-Platform
