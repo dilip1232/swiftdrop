@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>SwiftDrop</string>
+	<key>CFBundleDisplayName</key>
+	<string>SwiftDrop</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.swiftdrop.app</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleExecutable</key>
+	<string>SwiftDrop</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+
+	<!-- Menu-bar only: no Dock icon, no main window. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- REQUIRED on macOS 15+: triggers the Local Network permission prompt.
+	     Without these, mDNS discovery and LAN transfers are silently blocked. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SwiftDrop discovers and transfers files with nearby devices on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_swiftdrop._tcp</string>
+	</array>
+</dict>
+</plist>

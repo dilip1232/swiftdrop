@@ -1,0 +1,64 @@
+# Changelog
+
+All notable changes to SwiftDrop macOS will be documented in this file.
+
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [1.2.0]
+
+### Added
+- **Folder transfer** — select and send entire folders; files stream in parallel and the directory structure is preserved on the receiver
+- **Partial transfer status** — cancelled folder transfers show exactly how many files were received instead of a generic error
+- **Duplicate name protection** — folders and files with existing names get a unique suffix (e.g. "Photos (1)") instead of overwriting
+- **Folder and file icons** — transfer list shows distinct icons for folders and files
+
+### Improved
+- **Consent dialog stays visible** — the accept/reject popup no longer hides when a macOS notification arrives or the app loses focus
+
+## [1.1.0]
+
+### Added
+- **SPAKE2 PIN pairing** — secure device pairing where the PIN never leaves your device
+- **QR code pairing** — scan a QR code to pair devices instantly
+- **Per-device chat** — send text messages to individual paired devices
+- **Receiver consent** — incoming transfers require approval before files are written
+- **Pause and resume** — pause in-flight transfers and resume them later
+- **Encrypted transfers** — all transfers between paired devices are encrypted end-to-end
+
+## [1.0.0]
+
+### Added
+- **Device pairing** — pair devices securely before transferring
+- **Cancel and retry** — cancel in-flight sends and retry failed ones
+- **LAN subnet scan** — fallback discovery for networks where mDNS is blocked
+
+## [0.3.0] - 2026-06-02
+
+### Added
+- **Windows cross-discovery** — LAN subnet scanner finds Windows devices that can't use mDNS
+- **Bidirectional announcements** — devices announce themselves to peers for instant mutual discovery
+- **Improved peer removal** — clicking ✕ permanently removes device from known-peers cache
+
+### Changed
+- **Core refactor** — shared logic moved to `swiftdrop-core` module (discovery, transfers, encryption, peer management)
+- Mac app is now a thin shell importing `swiftdrop-core`
+- Keepalive prober and network watcher use shared core implementations
+
+### Fixed
+- Removed device reappearing after a few seconds (keepalive re-adding from known cache)
+- Stale windows-build.yml removed from mac repo
+- Release workflow updated to clone core module for CI builds
+
+## [0.1.0] - 2025-06-02
+
+### Added
+- Initial release
+- Wireless file transfer between Mac and Android over local network
+- mDNS auto-discovery of nearby devices
+- End-to-end encrypted transfers
+- Menu bar app with popover UI
+- Native file picker and drag-and-drop support
+- DMG installer with drag-to-Applications

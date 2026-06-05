@@ -1,0 +1,4 @@
+/swiftdrop
+/SwiftDrop.app/
+*.dmg
+.dmg-staging/
