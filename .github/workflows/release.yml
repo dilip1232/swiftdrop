@@ -248,6 +248,7 @@ jobs:
   release:
     needs: [version, build-mac, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - uses: actions/checkout@v6
         with:
@@ -271,6 +272,24 @@ jobs:
           tag_name: ${{ needs.version.outputs.version }}
           body: ${{ github.event.pull_request.body }}
           files: artifacts/*
+
+      - name: Update Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.version.outputs.version_num }}"
+          DMG="artifacts/SwiftDrop-macOS-${VERSION}.dmg"
+          SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
+          # Clone the tap repo, update version + sha, push
+          git clone https://x-access-token:${GH_TOKEN}@github.com/dilip1232/homebrew-swiftdrop.git tap
+          cd tap
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" Casks/swiftdrop.rb
+          sed -i "s/sha256 \".*\"/sha256 \"${SHA}\"/" Casks/swiftdrop.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/swiftdrop.rb
+          git commit -m "Update SwiftDrop to ${VERSION}"
+          git push
 
   # ── Rebase dev onto main after release ──
   rebase-dev:
