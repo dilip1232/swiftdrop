@@ -1,12 +1,11 @@
-<p align="center">
-  <img src="docs/assets/logo.png" alt="SwiftDrop" width="120" />
-</p>
-
-<h1 align="center">SwiftDrop</h1>
+<h1 align="center">
+  <img src="docs/assets/logo.png" alt="" width="48" /><br>
+  SwiftDrop
+</h1>
 
 <p align="center">
   <strong>⚡ Send files, folders & messages across your devices at full LAN speed.</strong><br>
-  <em>Encrypted. No cloud. No internet. No limits.</em>
+  <em>Encrypted. Private. No limits.</em>
 </p>
 
 <p align="center">
@@ -27,11 +26,11 @@
 
 ## 🤔 Why SwiftDrop?
 
-Most file transfer apps go through the cloud. That means slow uploads, size limits, and your files on someone else's server.
+Most file transfer apps are slow, bloated, or require accounts you don't want to create.
 
-**SwiftDrop doesn't.** It sends everything directly between your devices over your local network — at the raw speed your LAN allows. A 1 GB file? Done in seconds, not minutes.
+**SwiftDrop sends everything directly** between your devices over your local network — at the raw speed your LAN allows. A 1 GB video? About 15 seconds.
 
-> 🚀 **100+ MB/s** on a typical home network — that's faster than most USB 2.0 drives.
+> 🚀 **70–80 MB/s** over WiFi — faster than USB 2.0 and most Bluetooth transfer apps.
 
 ---
 
@@ -66,7 +65,7 @@ Devices find each other automatically via mDNS. LAN subnet scanning kicks in as 
 macOS menu bar · Windows system tray · Android native — all talk to each other seamlessly.
 
 ### 🌐 No Internet Required
-Works entirely on your local network. No cloud, no accounts, no sign-ups.
+Works entirely on your local network. No accounts, no sign-ups, no subscriptions.
 
 </td>
 </tr>
@@ -76,16 +75,20 @@ Works entirely on your local network. No cloud, no accounts, no sign-ups.
 
 ## 📸 Screenshots
 
-<p align="center">
-  <img src="docs/assets/screenshot-mac.png" alt="SwiftDrop on macOS" width="320" />&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="docs/assets/screenshot-android.jpg" alt="SwiftDrop on Android" width="200" />
-</p>
+<table align="center">
+<tr>
+<td align="center">
+<strong>🍎 macOS</strong><br><br>
+<img src="docs/assets/screenshot-mac.png" alt="SwiftDrop on macOS" height="480" />
+</td>
+<td align="center">
+<strong>🤖 Android</strong><br><br>
+<img src="docs/assets/screenshot-android.jpg" alt="SwiftDrop on Android" height="480" />
+</td>
+</tr>
+</table>
 
-<p align="center">
-  <em>macOS menu bar app &nbsp;·&nbsp; Android app — both showing file transfer + chat</em>
-</p>
-
-> 🖥️ **Windows screenshot coming soon**
+<p align="center"><em>File transfer + chat — works the same on every platform</em></p>
 
 ---
 
