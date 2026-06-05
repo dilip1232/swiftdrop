@@ -73,10 +73,10 @@ Grab the latest release for your platform:
 
 | Platform | Download | Notes |
 |----------|----------|-------|
-| 🍎 **macOS** | [SwiftDrop-2.0.0.dmg](https://github.com/dilip1232/swiftdrop/releases/latest) | Menu bar app, macOS 12+ |
-| 🪟 **Windows** | [SwiftDrop-Windows-2.0.0.exe](https://github.com/dilip1232/swiftdrop/releases/latest) | System tray app, Windows 10+ |
-| 🐧 **Linux** | [.AppImage](https://github.com/dilip1232/swiftdrop/releases/latest) · [.deb](https://github.com/dilip1232/swiftdrop/releases/latest) · [.rpm](https://github.com/dilip1232/swiftdrop/releases/latest) · [.tar.gz](https://github.com/dilip1232/swiftdrop/releases/latest) | GTK4 + WebKitGTK 6.0 |
-| 🤖 **Android** | [SwiftDrop-2.0.0.apk](https://github.com/dilip1232/swiftdrop/releases/latest) | Android 8.0+ |
+| 🍎 **macOS** | [Download DMG](https://github.com/dilip1232/swiftdrop/releases/latest) | Menu bar + window, macOS 12+ |
+| 🪟 **Windows** | [Download EXE](https://github.com/dilip1232/swiftdrop/releases/latest) | System tray + window, Windows 10+ |
+| 🐧 **Linux** | [AppImage](https://github.com/dilip1232/swiftdrop/releases/latest) · [.deb](https://github.com/dilip1232/swiftdrop/releases/latest) · [.rpm](https://github.com/dilip1232/swiftdrop/releases/latest) · [.tar.gz](https://github.com/dilip1232/swiftdrop/releases/latest) | GTK4 + WebKitGTK 6.0 |
+| 🤖 **Android** | [Download APK](https://github.com/dilip1232/swiftdrop/releases/latest) | Android 8.0+ |
 
 ---
 
@@ -100,9 +100,9 @@ SwiftDrop was built with a **zero-trust LAN** mindset — every connection is au
 ```
 swiftdrop/
 ├── core/       → Shared Go module — discovery, transfers, encryption, chat, pairing
-├── mac/        → macOS menu-bar app (Wails v3)
-├── windows/    → Windows system tray app (Wails v3)
-├── linux/      → Linux desktop app (Wails v3)
+├── mac/        → macOS app — menu bar tray + window (Wails v3)
+├── windows/    → Windows app — system tray + window (Wails v3)
+├── linux/      → Linux app — system tray + window (Wails v3)
 ├── android/    → Android app (Kotlin)
 └── .github/    → Unified CI + single-version release workflow
 ```
@@ -154,9 +154,15 @@ See [open issues](https://github.com/dilip1232/swiftdrop/issues) for ideas on wh
 
 ---
 
+## 🐛 Found a Bug?
+
+If something isn't working right, [open an issue](https://github.com/dilip1232/swiftdrop/issues/new) — include your OS, what you were doing, and any error messages. Screenshots help too.
+
+---
+
 ## 📄 License
 
-[MIT](LICENSE) — use it however you want.
+[GPLv3](LICENSE) — free to use, modify, and share. All derivatives must remain open source.
 
 ---
 
