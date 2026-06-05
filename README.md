@@ -78,6 +78,13 @@ Grab the latest release for your platform:
 | 🐧 **Linux** | [AppImage](https://github.com/dilip1232/swiftdrop/releases/latest) · [.deb](https://github.com/dilip1232/swiftdrop/releases/latest) · [.rpm](https://github.com/dilip1232/swiftdrop/releases/latest) · [.tar.gz](https://github.com/dilip1232/swiftdrop/releases/latest) | GTK4 + WebKitGTK 6.0 |
 | 🤖 **Android** | [Download APK](https://github.com/dilip1232/swiftdrop/releases/latest) | Android 8.0+ |
 
+### 🍺 Install via Homebrew (macOS)
+
+```bash
+brew tap dilip1232/swiftdrop
+brew install --cask swiftdrop
+```
+
 ---
 
 ## 🔐 Security
