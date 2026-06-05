@@ -33,10 +33,9 @@ func main() {
 	runApp(*flagPort)
 }
 
-// runApp is the normal mode: menu-bar icon + a frameless popover drawer that
-// hosts the whole UI. Transfers run as goroutines in this process, so closing
-// the drawer never interrupts them.
-func runApp(port int) {
+// initCore sets up identity, peer registry, tracker, and server — shared by
+// both GUI and headless modes.
+func initCore(port int) (core.Identity, *core.PeerRegistry, *core.Tracker, *core.Server) {
 	id := core.LoadOrCreateIdentity(port)
 	if *flagName != "" {
 		id.Name = *flagName
@@ -49,8 +48,14 @@ func runApp(port int) {
 	reg.LoadManual()
 	trk := core.NewTracker()
 	core.InitPairStore()
-
 	srv := core.NewServer(id, reg, trk)
+	return id, reg, trk, srv
+}
+
+// runApp starts the GUI: menu-bar tray icon + window. Left-click toggles the
+// window; right-click shows the menu. Transfers keep running when hidden.
+func runApp(port int) {
+	id, reg, _, srv := initCore(port)
 	srv.WebFS = webFS
 
 	app := application.New(application.Options{
@@ -65,7 +70,6 @@ func runApp(port int) {
 	})
 
 	srv.OnQuit = func() { app.Quit() }
-	// ConsentHook is set after window creation (see below).
 
 	core.StartServer(srv)
 
@@ -76,39 +80,31 @@ func runApp(port int) {
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "swiftdrop",
-		Width:            340,
-		Height:           520,
-		Frameless:        true,
-		AlwaysOnTop:      true,
+		Title:            "SwiftDrop",
+		Width:            400,
+		Height:           650,
+		MinWidth:         340,
+		MinHeight:        450,
 		Hidden:           true,
-		DisableResize:    true,
-		HideOnEscape:     true,
-		HideOnFocusLost:  true,
 		EnableFileDrop:   true,
 		URL:              "/",
-		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+		BackgroundColour: application.NewRGB(15, 17, 21), // matches --bg: #0f1115
 		Mac: application.MacWindow{
-			InvisibleTitleBarHeight: 0,
-			TitleBar:                application.MacTitleBarHiddenInset,
+			CollectionBehavior: application.MacWindowCollectionBehaviorMoveToActiveSpace,
 		},
 	})
 
-	// Native file picker, invoked from the UI via /api/pick.
-	// Declared here (after window creation) so we can re-show the window
-	// after the dialog closes — HideOnFocusLost hides it when the picker
-	// steals focus.
+	// Native file picker via Wails dialog.
 	srv.Pick = func() ([]string, error) {
 		d := app.Dialog.OpenFile()
 		d.CanChooseFiles(true)
 		d.CanChooseDirectories(true)
 		d.SetTitle("Choose files or folders to send")
 		paths, err := d.PromptForMultipleSelection()
-		// Re-show the window after the dialog closes.
-		window.Show()
 		return paths, err
 	}
 
-	// Keep the window alive when "closed" — just hide it (popover behaviour).
+	// Hide-to-tray: closing the window hides it; the app keeps running.
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		window.Hide()
 		e.Cancel()
@@ -143,12 +139,37 @@ func runApp(port int) {
 	tray := app.SystemTray.New()
 	tray.SetTemplateIcon(core.TrayIcon())
 	tray.SetTooltip("SwiftDrop")
-	tray.AttachWindow(window).WindowOffset(6)
 
-	// Right-click menu so the app is always quittable (left-click toggles the
-	// drawer; the drawer also has a Quit button).
+	// showOnActiveScreen moves the window to whichever monitor the mouse
+	// cursor is on (i.e. where the user clicked the tray icon).
+	showOnActiveScreen := func() {
+		mx, _ := mouseLocation()
+		screens := app.Screen.GetAll()
+		for _, s := range screens {
+			b := s.Bounds
+			if int(mx) >= b.X && int(mx) < b.X+b.Width {
+				window.SetScreen(s)
+				break
+			}
+		}
+		window.Show()
+		window.Focus()
+	}
+
+	// Left-click toggles the window; right-click shows the menu.
+	tray.OnClick(func() {
+		if window.IsVisible() {
+			window.Hide()
+		} else {
+			showOnActiveScreen()
+		}
+	})
+
 	menu := app.NewMenu()
-	menu.Add("Open SwiftDrop").OnClick(func(*application.Context) { tray.ShowWindow() })
+	menu.Add("Open SwiftDrop").OnClick(func(*application.Context) {
+		showOnActiveScreen()
+	})
+	menu.AddSeparator()
 	menu.Add("Quit SwiftDrop").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)
 	tray.OnRightClick(func() { tray.OpenMenu() })
@@ -161,20 +182,7 @@ func runApp(port int) {
 // runHeadless starts the server + discovery with no UI. Used for automated
 // testing and for running several instances on one host.
 func runHeadless(port int) {
-	id := core.LoadOrCreateIdentity(port)
-	if *flagName != "" {
-		id.Name = *flagName
-	}
-	if *flagID != "" {
-		id.ID = *flagID
-	}
-	reg := core.NewPeerRegistry()
-	reg.LoadKnown()
-	reg.LoadManual()
-	trk := core.NewTracker()
-	core.InitPairStore()
-
-	srv := core.NewServer(id, reg, trk)
+	id, reg, _, srv := initCore(port)
 	var ln net.Listener
 	var err error
 	for offset := 0; offset < 10; offset++ {
