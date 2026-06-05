@@ -12,22 +12,23 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── Extract version from branch name ──
+  # ── Read version from VERSION file ──
   version:
-    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       version_num: ${{ steps.version.outputs.version_num }}
     steps:
-      - name: Extract version
+      - uses: actions/checkout@v4
+      - name: Read VERSION file
         id: version
         run: |
-          BRANCH="${{ github.event.pull_request.head.ref }}"
-          VERSION="${BRANCH#release/}"
+          VERSION=$(cat VERSION | tr -d '[:space:]')
           VERSION_NUM="${VERSION#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "version_num=$VERSION_NUM" >> "$GITHUB_OUTPUT"
+          echo "📦 Releasing $VERSION"
 
   # ── Build macOS DMG ──
   build-mac:
@@ -141,7 +142,7 @@ jobs:
           Version: VERSION_PLACEHOLDER
           Release: 1
           Summary: Fast LAN file transfer
-          License: MIT
+          License: GPLv3
           URL:     https://github.com/dilip1232/swiftdrop
 
           %description
@@ -273,3 +274,21 @@ jobs:
           tag_name: ${{ needs.version.outputs.version }}
           body: ${{ github.event.pull_request.body }}
           files: artifacts/*
+
+  # ── Rebase dev onto main after release ──
+  rebase-dev:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebase dev onto main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout dev
+          git rebase main
+          git push origin dev --force-with-lease
