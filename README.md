@@ -1,52 +1,146 @@
-# SwiftDrop
+<p align="center">
+  <img src="docs/assets/logo.png" alt="SwiftDrop" width="120" />
+</p>
 
-**Blazing-fast file, folder & chat transfer across Mac, Windows & Android — at full LAN speed. Encrypted. No cloud.**
+<h1 align="center">SwiftDrop</h1>
 
-SwiftDrop lets you send files, folders, and messages between your devices instantly over your local network. No internet required, no file size limits, no cloud storage. Everything stays on your LAN, encrypted end-to-end.
+<p align="center">
+  <strong>⚡ Send files, folders & messages across your devices at full LAN speed.</strong><br>
+  <em>Encrypted. No cloud. No internet. No limits.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/dilip1232/swiftdrop/releases/latest"><img src="https://img.shields.io/github/v/release/dilip1232/swiftdrop?style=for-the-badge&color=blue" alt="Latest Release"></a>&nbsp;
+  <a href="https://github.com/dilip1232/swiftdrop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dilip1232/swiftdrop/ci.yml?style=for-the-badge&label=CI" alt="CI"></a>&nbsp;
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/dilip1232/swiftdrop?style=for-the-badge" alt="License"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/dilip1232/swiftdrop/releases/latest">📥 Download</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="#-screenshots">Screenshots</a> ·
+  <a href="#-security">Security</a> ·
+  <a href="#-building-from-source">Build</a>
+</p>
 
 ---
 
-## Features
+## 🤔 Why SwiftDrop?
 
-- **Cross-Platform** — macOS, Windows, Android (all talk to each other)
-- **Files & Folders** — drag-and-drop files or entire folders
-- **Built-in Chat** — per-device messaging, no separate app needed
-- **LAN Speed** — transfers run at your network's full speed (typically 100+ MB/s)
-- **End-to-End Encrypted** — AES-256-GCM encryption for all transfers
-- **SPAKE2 Pairing** — secure PIN-based pairing, PIN never crosses the wire
-- **Pause & Resume** — pause transfers and resume where you left off
-- **Receiver Consent** — accept or reject incoming files before they download
-- **No Internet Required** — works entirely on your local network
-- **Auto-Discovery** — finds devices via mDNS + LAN subnet scanning
-- **Native Experience** — macOS menu bar app, Windows system tray, Android native
-- **Headless Mode** — run without UI for server/automation use
+Most file transfer apps go through the cloud. That means slow uploads, size limits, and your files on someone else's server.
 
-## Architecture
+**SwiftDrop doesn't.** It sends everything directly between your devices over your local network — at the raw speed your LAN allows. A 1 GB file? Done in seconds, not minutes.
+
+> 🚀 **100+ MB/s** on a typical home network — that's faster than most USB 2.0 drives.
+
+---
+
+## ✨ Features
+
+<table>
+<tr>
+<td width="50%">
+
+### 📁 Files & Folders
+Drag and drop any file or entire folder. Folders are zip-streamed on-the-fly and auto-extracted on the other side.
+
+### 💬 Built-in Chat
+Message any paired device directly. No separate app needed — chat is built right into SwiftDrop.
+
+### ⏸️ Pause & Resume
+Pause a transfer mid-stream and pick up exactly where you left off.
+
+### 🛡️ Receiver Consent
+Nothing downloads without your permission. Accept or reject every incoming file.
+
+</td>
+<td width="50%">
+
+### 🔐 End-to-End Encrypted
+AES-256-GCM encryption on every transfer. SPAKE2 pairing means your PIN never crosses the wire.
+
+### 🔍 Auto-Discovery
+Devices find each other automatically via mDNS. LAN subnet scanning kicks in as a fallback.
+
+### 📱 Cross-Platform
+macOS menu bar · Windows system tray · Android native — all talk to each other seamlessly.
+
+### 🌐 No Internet Required
+Works entirely on your local network. No cloud, no accounts, no sign-ups.
+
+</td>
+</tr>
+</table>
+
+---
+
+## 📸 Screenshots
+
+<p align="center">
+  <img src="docs/assets/screenshot-mac.png" alt="SwiftDrop on macOS" width="320" />&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/assets/screenshot-android.jpg" alt="SwiftDrop on Android" width="200" />
+</p>
+
+<p align="center">
+  <em>macOS menu bar app &nbsp;·&nbsp; Android app — both showing file transfer + chat</em>
+</p>
+
+> 🖥️ **Windows screenshot coming soon**
+
+---
+
+## 📥 Download
+
+Grab the latest release for your platform:
+
+| Platform | Download | Notes |
+|----------|----------|-------|
+| 🍎 **macOS** | [SwiftDrop-2.0.0.dmg](https://github.com/dilip1232/swiftdrop/releases/latest) | Menu bar app, macOS 12+ |
+| 🪟 **Windows** | [SwiftDrop-Windows-2.0.0.exe](https://github.com/dilip1232/swiftdrop/releases/latest) | System tray app, Windows 10+ |
+| 🤖 **Android** | [SwiftDrop-2.0.0.apk](https://github.com/dilip1232/swiftdrop/releases/latest) | Android 8.0+ |
+
+---
+
+## 🔐 Security
+
+SwiftDrop was built with a **zero-trust LAN** mindset — every connection is authenticated and encrypted, even on your home network.
+
+| Layer | Protection |
+|-------|------------|
+| **Pairing** | SPAKE2 PAKE — PIN-based, PIN never leaves your device |
+| **Encryption** | AES-256-GCM on every file transfer |
+| **Authentication** | HMAC on every API request |
+| **Key Storage** | macOS Keychain · Windows DPAPI · Android EncryptedSharedPreferences |
+| **Replay Protection** | Nonce cache prevents replay attacks |
+| **UI Access** | Loopback-only — web UI only accessible from localhost |
+
+---
+
+## 🏗️ Architecture
 
 ```
 swiftdrop/
-├── core/       Shared Go module — discovery, transfers, encryption, chat, pairing
-├── mac/        macOS menu-bar app (Wails v3)
-├── windows/    Windows system tray app (Wails v3)
-└── android/    Android app (Kotlin)
+├── core/       → Shared Go module — discovery, transfers, encryption, chat, pairing
+├── mac/        → macOS menu-bar app (Wails v3)
+├── windows/    → Windows system tray app (Wails v3)
+├── android/    → Android app (Kotlin)
+└── .github/    → Unified CI + single-version release workflow
 ```
 
-## Download
+**One repo, one version, one release.** Every release produces a DMG, EXE, and APK — all from the same tag.
 
-> Coming soon — check [Releases](https://github.com/dilip1232/swiftdrop/releases) for the latest builds.
+---
 
-## Building from Source
+## 🛠️ Building from Source
 
 ### Prerequisites
-- **Go 1.25+** (for core, mac, windows)
-- **JDK 17 + Android SDK** (for android)
+- **Go 1.25+** — for core, mac, windows
+- **JDK 17 + Android SDK** — for android
 
 ### macOS
 ```bash
 cd mac
-go build -o swiftdrop .
-# Or use the dev-deploy script for full .app bundle:
-bash dev-deploy.sh
+bash dev-deploy.sh   # builds, signs, installs to ~/Applications, launches
 ```
 
 ### Windows
@@ -61,15 +155,26 @@ cd android
 ./gradlew assembleDebug
 ```
 
-## Security
+---
 
-- **SPAKE2 PAKE** — PIN-based pairing where the PIN never leaves your device
-- **AES-256-GCM** — all file transfers are encrypted end-to-end
-- **HMAC Authentication** — every request is authenticated
-- **Platform Keystore** — encryption keys stored in macOS Keychain / Windows DPAPI
-- **Replay Protection** — nonce cache prevents replay attacks
-- **Loopback-only UI** — web UI only accessible from localhost
+## 🤝 Contributing
 
-## License
+1. Fork the repo
+2. Create a feature branch from `dev` (`git checkout -b feature/my-feature dev`)
+3. Commit your changes
+4. Open a PR to `dev`
 
-[MIT](LICENSE)
+See [open issues](https://github.com/dilip1232/swiftdrop/issues) for ideas on what to work on.
+
+---
+
+## 📄 License
+
+[MIT](LICENSE) — use it however you want.
+
+---
+
+<p align="center">
+  <strong>⚡ Stop waiting for uploads. Send at LAN speed.</strong><br><br>
+  <a href="https://github.com/dilip1232/swiftdrop/releases/latest">Download SwiftDrop →</a>
+</p>
