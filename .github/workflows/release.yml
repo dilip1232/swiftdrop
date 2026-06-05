@@ -80,6 +80,117 @@ jobs:
           name: windows-exe
           path: windows/SwiftDrop-Windows-*.exe
 
+  # ── Build Linux packages (tar.gz, .deb, .rpm, AppImage) ──
+  build-linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: linux/go.mod
+
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev rpm libfuse2
+
+      - name: Build SwiftDrop
+        working-directory: linux
+        run: go build -ldflags "-s -w" -o SwiftDrop .
+
+      - name: Package tar.gz
+        working-directory: linux
+        run: tar czf SwiftDrop-Linux-${{ needs.version.outputs.version_num }}.tar.gz SwiftDrop
+
+      - name: Build .deb
+        run: |
+          VERSION=${{ needs.version.outputs.version_num }}
+          PKG=swiftdrop_${VERSION}_amd64
+          mkdir -p $PKG/DEBIAN
+          mkdir -p $PKG/usr/bin
+          mkdir -p $PKG/usr/share/applications
+          mkdir -p $PKG/usr/share/icons/hicolor/256x256/apps
+          cp linux/SwiftDrop $PKG/usr/bin/swiftdrop
+          cp linux/swiftdrop.desktop $PKG/usr/share/applications/
+          cp linux/swiftdrop.png $PKG/usr/share/icons/hicolor/256x256/apps/
+          cat > $PKG/DEBIAN/control <<EOF
+          Package: swiftdrop
+          Version: $VERSION
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Depends: libgtk-4-1, libwebkitgtk-6.0-4
+          Maintainer: SwiftDrop <dev@swiftdrop.app>
+          Description: Fast LAN file transfer
+           Send files, folders & messages across your devices at full LAN speed.
+           Encrypted, private, no limits.
+          EOF
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' $PKG/DEBIAN/control
+          dpkg-deb --build $PKG
+          mv ${PKG}.deb SwiftDrop-Linux-${VERSION}.deb
+
+      - name: Build .rpm
+        run: |
+          VERSION=${{ needs.version.outputs.version_num }}
+          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cat > rpmbuild/SPECS/swiftdrop.spec <<'SPEC'
+          Name:    swiftdrop
+          Version: VERSION_PLACEHOLDER
+          Release: 1
+          Summary: Fast LAN file transfer
+          License: MIT
+          URL:     https://github.com/dilip1232/swiftdrop
+
+          %description
+          Send files, folders & messages across your devices at full LAN speed.
+
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          mkdir -p %{buildroot}/usr/share/applications
+          mkdir -p %{buildroot}/usr/share/icons/hicolor/256x256/apps
+          cp %{_sourcedir}/SwiftDrop %{buildroot}/usr/bin/swiftdrop
+          cp %{_sourcedir}/swiftdrop.desktop %{buildroot}/usr/share/applications/
+          cp %{_sourcedir}/swiftdrop.png %{buildroot}/usr/share/icons/hicolor/256x256/apps/
+
+          %files
+          /usr/bin/swiftdrop
+          /usr/share/applications/swiftdrop.desktop
+          /usr/share/icons/hicolor/256x256/apps/swiftdrop.png
+          SPEC
+          sed -i 's/^          //' rpmbuild/SPECS/swiftdrop.spec
+          sed -i "s/VERSION_PLACEHOLDER/$VERSION/" rpmbuild/SPECS/swiftdrop.spec
+          cp linux/SwiftDrop rpmbuild/SOURCES/
+          cp linux/swiftdrop.desktop rpmbuild/SOURCES/
+          cp linux/swiftdrop.png rpmbuild/SOURCES/
+          rpmbuild --define "_topdir $(pwd)/rpmbuild" -bb rpmbuild/SPECS/swiftdrop.spec
+          cp rpmbuild/RPMS/x86_64/*.rpm SwiftDrop-Linux-${VERSION}.rpm
+
+      - name: Build AppImage
+        run: |
+          VERSION=${{ needs.version.outputs.version_num }}
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          cp linux/SwiftDrop AppDir/usr/bin/swiftdrop
+          cp linux/swiftdrop.desktop AppDir/usr/share/applications/
+          cp linux/swiftdrop.png AppDir/usr/share/icons/hicolor/256x256/apps/
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --desktop-file linux/swiftdrop.desktop --icon-file linux/swiftdrop.png --output appimage
+          mv SwiftDrop*.AppImage SwiftDrop-Linux-${VERSION}.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            linux/SwiftDrop-Linux-*.tar.gz
+            SwiftDrop-Linux-*.deb
+            SwiftDrop-Linux-*.rpm
+            SwiftDrop-Linux-*.AppImage
+
   # ── Build Android APK ──
   build-android:
     needs: version
@@ -138,7 +249,7 @@ jobs:
 
   # ── Create tag & GitHub Release with all assets ──
   release:
-    needs: [version, build-mac, build-windows, build-android]
+    needs: [version, build-mac, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
