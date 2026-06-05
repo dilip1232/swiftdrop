@@ -51,7 +51,7 @@ jobs:
         working-directory: mac
         run: mv SwiftDrop.dmg SwiftDrop-macOS-${{ needs.version.outputs.version_num }}.dmg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mac-dmg
           path: mac/SwiftDrop-macOS-*.dmg
@@ -76,7 +76,7 @@ jobs:
         shell: pwsh
         run: Copy-Item SwiftDrop.exe "SwiftDrop-Windows-${{ needs.version.outputs.version_num }}.exe"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-exe
           path: windows/SwiftDrop-Windows-*.exe
@@ -182,7 +182,7 @@ jobs:
             --output appimage
           mv SwiftDrop*.AppImage SwiftDrop-Linux-${VERSION}.AppImage
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-packages
           path: |
@@ -239,7 +239,7 @@ jobs:
       - name: Rename APK with version
         run: cp android/app/build/outputs/apk/release/app-release.apk SwiftDrop-Android-${{ needs.version.outputs.version_num }}.apk
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android-apk
           path: SwiftDrop-Android-*.apk
