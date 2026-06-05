@@ -45,7 +45,7 @@ Most file transfer apps are slow, bloated, or cap your speed well below what you
 | **⏸️ Pause & Resume** | **🔍 Auto-Discovery** |
 | Pause a transfer mid-stream and pick up exactly where you left off. | Devices find each other via mDNS. LAN subnet scanning as fallback. |
 | **✅ Receiver Consent** | **📱 Cross-Platform** |
-| Nothing downloads without your permission. Accept or reject every incoming file. | macOS menu bar · Windows system tray · Android native — all seamless. |
+| Nothing downloads without your permission. Accept or reject every incoming file. | macOS · Windows · Linux · Android — all talk to each other seamlessly. |
 | **🌐 No Internet Required** | |
 | Works entirely on your local network. No accounts, no sign-ups, no subscriptions. | |
 
@@ -75,6 +75,7 @@ Grab the latest release for your platform:
 |----------|----------|-------|
 | 🍎 **macOS** | [SwiftDrop-2.0.0.dmg](https://github.com/dilip1232/swiftdrop/releases/latest) | Menu bar app, macOS 12+ |
 | 🪟 **Windows** | [SwiftDrop-Windows-2.0.0.exe](https://github.com/dilip1232/swiftdrop/releases/latest) | System tray app, Windows 10+ |
+| 🐧 **Linux** | [SwiftDrop-Linux-2.0.0.tar.gz](https://github.com/dilip1232/swiftdrop/releases/latest) | GTK3 + WebKit2GTK, most desktop distros |
 | 🤖 **Android** | [SwiftDrop-2.0.0.apk](https://github.com/dilip1232/swiftdrop/releases/latest) | Android 8.0+ |
 
 ---
@@ -88,7 +89,7 @@ SwiftDrop was built with a **zero-trust LAN** mindset — every connection is au
 | **Pairing** | SPAKE2 PAKE — PIN-based, PIN never leaves your device |
 | **Encryption** | AES-256-GCM on every file transfer |
 | **Authentication** | HMAC on every API request |
-| **Key Storage** | macOS Keychain · Windows DPAPI · Android EncryptedSharedPreferences |
+| **Key Storage** | macOS Keychain · Windows DPAPI · Linux keyring · Android EncryptedSharedPreferences |
 | **Replay Protection** | Nonce cache prevents replay attacks |
 | **UI Access** | Loopback-only — web UI only accessible from localhost |
 
@@ -101,6 +102,7 @@ swiftdrop/
 ├── core/       → Shared Go module — discovery, transfers, encryption, chat, pairing
 ├── mac/        → macOS menu-bar app (Wails v3)
 ├── windows/    → Windows system tray app (Wails v3)
+├── linux/      → Linux desktop app (Wails v3)
 ├── android/    → Android app (Kotlin)
 └── .github/    → Unified CI + single-version release workflow
 ```
@@ -110,7 +112,8 @@ swiftdrop/
 ## 🛠️ Building from Source
 
 ### Prerequisites
-- **Go 1.25+** — for core, mac, windows
+- **Go 1.25+** — for core, mac, windows, linux
+- **GTK3 + WebKit2GTK** — for linux (`sudo apt install libgtk-3-dev libwebkit2gtk-4.0-dev`)
 - **JDK 17 + Android SDK** — for android
 
 ### macOS
@@ -123,6 +126,13 @@ bash dev-deploy.sh   # builds, signs, installs to ~/Applications, launches
 ```bash
 cd windows
 go build -ldflags "-s -w -H windowsgui" -o SwiftDrop.exe .
+```
+
+### Linux
+```bash
+cd linux
+go build -o SwiftDrop .
+./SwiftDrop
 ```
 
 ### Android

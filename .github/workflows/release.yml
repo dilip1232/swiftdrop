@@ -80,6 +80,33 @@ jobs:
           name: windows-exe
           path: windows/SwiftDrop-Windows-*.exe
 
+  # ── Build Linux binary ──
+  build-linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: linux/go.mod
+
+      - name: Install Linux deps
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Build SwiftDrop
+        working-directory: linux
+        run: go build -ldflags "-s -w" -o SwiftDrop .
+
+      - name: Package tar.gz
+        working-directory: linux
+        run: tar czf SwiftDrop-Linux-${{ needs.version.outputs.version_num }}.tar.gz SwiftDrop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tar
+          path: linux/SwiftDrop-Linux-*.tar.gz
+
   # ── Build Android APK ──
   build-android:
     needs: version
@@ -138,7 +165,7 @@ jobs:
 
   # ── Create tag & GitHub Release with all assets ──
   release:
-    needs: [version, build-mac, build-windows, build-android]
+    needs: [version, build-mac, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
