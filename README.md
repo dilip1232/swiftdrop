@@ -154,15 +154,15 @@ See [open issues](https://github.com/dilip1232/swiftdrop/issues) for ideas on wh
 
 ---
 
-## � Found a Bug?
+## 🐛 Found a Bug?
 
 If something isn't working right, [open an issue](https://github.com/dilip1232/swiftdrop/issues/new) — include your OS, what you were doing, and any error messages. Screenshots help too.
 
 ---
 
-## �📄 License
+## 📄 License
 
-[MIT](LICENSE) — use it however you want.
+[GPLv3](LICENSE) — free to use, modify, and share. All derivatives must remain open source.
 
 ---
 
