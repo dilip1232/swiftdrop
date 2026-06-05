@@ -113,7 +113,7 @@ swiftdrop/
 
 ### Prerequisites
 - **Go 1.25+** — for core, mac, windows, linux
-- **GTK3 + WebKit2GTK** — for linux (`sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev`)
+- **GTK4 + WebKitGTK 6.0** — for linux (`sudo apt install libgtk-4-dev libwebkitgtk-6.0-dev`)
 - **JDK 17 + Android SDK** — for android
 
 ### macOS
