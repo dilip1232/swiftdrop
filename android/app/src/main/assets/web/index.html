@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>SwiftDrop</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --border: #2a2f3a;
+    --text: #e7ebf0; --muted: #8b93a3; --accent: #4f8cff; --accent-2: #7a5cff;
+    --ok: #34d399; --err: #f87171;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  .wrap { padding: 18px 16px 28px; max-width: 560px; margin: 0 auto; }
+
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .logo {
+    width: 40px; height: 40px; border-radius: 12px; flex: none; color: #fff; font-size: 21px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: grid; place-items: center;
+  }
+  header h1 { font-size: 19px; margin: 0; }
+  header .me { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+  header .me b { color: var(--text); font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 5px; vertical-align: middle; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
+
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 22px 2px 10px; }
+
+  /* Devices */
+  .devices { display: flex; flex-direction: column; gap: 6px; }
+  .device {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    background: var(--panel); border: 1.5px solid var(--border); border-radius: 12px;
+    cursor: pointer; transition: .12s;
+  }
+  .device.active { border-color: var(--accent); background: rgba(79,140,255,.10); }
+  .device .ic { width: 32px; height: 32px; border-radius: 9px; flex: none; display: grid; place-items: center; background: var(--panel-2); font-size: 16px; }
+  .device .nm { font-weight: 600; font-size: 14px; }
+  .device .pf { font-size: 11px; color: var(--muted); }
+  .device .check { margin-left: auto; color: var(--accent); font-size: 20px; opacity: 0; }
+  .device.active .check { opacity: 1; }
+  .pair-btn { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 11px; font-weight: 600; padding: 4px 10px; cursor: pointer; color: var(--muted); flex: none; line-height: 1.3; transition: .12s; white-space: nowrap; }
+  .pair-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .pair-btn.paired { color: var(--ok); border-color: var(--ok); }
+  .pair-btn.paired:hover { color: var(--err); border-color: var(--err); }
+  .device .rm { flex: none; color: var(--muted); font-size: 12px; line-height: 1; padding: 2px 6px; cursor: pointer; border: 1px solid var(--border); border-radius: 6px; }
+  .empty { padding: 22px 14px; text-align: center; color: var(--muted); font-size: 13.5px; background: var(--panel); border-radius: 14px; }
+  .addrow { display: flex; gap: 8px; margin-top: 8px; }
+  .addrow input { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 12px 14px; border-radius: 13px; border: 1.5px solid var(--border); background: var(--panel); color: var(--text); }
+  .addrow input::placeholder { color: var(--muted); }
+  .addrow input:focus { outline: none; border-color: var(--accent); }
+  .addbtn { flex: none; padding: 12px 16px; font-size: 18px; }
+  .spin { display: inline-block; width: 15px; height: 15px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: sp .8s linear infinite; vertical-align: -2px; margin-right: 7px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+
+  /* Files */
+  .chooser {
+    width: 100%; padding: 26px 16px; text-align: center; border-radius: 16px;
+    border: 2px dashed var(--border); background: var(--panel); color: var(--text);
+    cursor: pointer; transition: .12s;
+  }
+  .chooser:active { border-color: var(--accent); background: var(--panel-2); }
+  .chooser .big { font-size: 30px; }
+  .chooser p { margin: 8px 0 0; color: var(--muted); }
+  .chooser b { color: var(--text); }
+
+  .file { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--panel); border-radius: 13px; margin-top: 8px; }
+  .file .meta { flex: 1; min-width: 0; }
+  .file .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+  .ficon { flex-shrink: 0; }
+  .file .sub { font-size: 12px; color: var(--muted); }
+  .bar { height: 6px; border-radius: 6px; background: var(--border); overflow: hidden; margin-top: 7px; }
+  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .15s; }
+  .file .pct { font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--muted); width: 52px; text-align: right; }
+  .file.done .pct { color: var(--ok); } .file.err .pct { color: var(--err); }
+  .file .cancel { color: var(--muted); font-size: 20px; line-height: 1; padding: 4px 8px; }
+  .file .cancel:active { color: var(--err); }
+  .file .accept { color: var(--ok); font-size: 11px; font-weight: 600; padding: 3px 8px; border: 1px solid var(--ok); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .file .accept:active { background: var(--ok); color: #fff; }
+  .file .reject { color: var(--err); font-size: 11px; font-weight: 600; padding: 3px 8px; border: 1px solid var(--err); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .file .reject:active { background: var(--err); color: #fff; }
+  .file .retry { color: var(--accent); font-size: 11px; font-weight: 600; padding: 3px 8px; border: 1px solid var(--accent); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .file .retry:active { background: var(--accent); color: #fff; }
+  .file .pause { color: var(--muted); font-size: 11px; font-weight: 600; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .file .pause:active { border-color: var(--muted); color: var(--text); }
+  .file .openfolder { color: var(--muted); font-size: 15px; padding: 4px 6px; cursor: pointer; opacity: .5; text-decoration: none; }
+  .file .openfolder:active { color: var(--accent); opacity: 1; }
+  .ip { color: var(--muted); }
+
+  .actions { display: flex; gap: 10px; margin-top: 16px; }
+  button {
+    font: inherit; font-size: 15px; font-weight: 600; border: none; cursor: pointer;
+    border-radius: 13px; padding: 14px 16px; color: #fff; flex: 1;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  }
+  button:disabled { opacity: .4; }
+  button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); flex: none; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(16px);
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 12px 18px; border-radius: 12px; opacity: 0; pointer-events: none; transition: .25s; max-width: 90vw;
+    box-shadow: 0 8px 30px rgba(0,0,0,.4);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.err { border-color: var(--err); }
+
+  /* Pairing modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; justify-content: center; align-items: center; z-index: 999; padding: 20px; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--bg); border: 1px solid var(--border); border-radius: 18px; padding: 22px; width: 100%; max-width: 340px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .modal-header h3 { margin: 0; font-size: 17px; }
+  .modal-close { cursor: pointer; font-size: 24px; color: var(--muted); padding: 2px 8px; }
+  .pair-option { display: block; width: 100%; margin-bottom: 10px; text-align: center; }
+  .pin-display { font-family: monospace; font-size: 36px; font-weight: 700; letter-spacing: 10px; text-align: center; padding: 20px; background: var(--panel-2); border-radius: 14px; color: var(--accent); }
+  .pin-input { flex: 1; font-family: monospace; font-size: 22px; letter-spacing: 8px; text-align: center; padding: 14px; border-radius: 13px; border: 1.5px solid var(--border); background: var(--panel-2); color: var(--text); outline: none; -webkit-appearance: none; }
+  .pin-input:focus { border-color: var(--accent); }
+  .pair-submit { flex: none; padding: 14px 20px; }
+  .qr-container { text-align: center; padding: 10px 0; }
+  .qr-container img { border-radius: 12px; background: #fff; padding: 10px; max-width: 220px; }
+  .qr-or { color: var(--muted); font-size: 12px; margin: 12px 0 8px; text-align: center; }
+</style>
+<link rel="stylesheet" href="chat.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">⇅</div>
+    <div>
+      <h1>SwiftDrop</h1>
+      <div class="me"><span class="dot" id="dot"></span>This device: <b id="meName" style="cursor:pointer">…</b><span id="meIp" class="ip"></span></div>
+    </div>
+  </header>
+
+  <h2>Devices</h2>
+  <div class="devices" id="devices">
+    <div class="empty"><span class="spin"></span>Looking for devices…</div>
+  </div>
+  <div class="addrow">
+    <input id="hostInput" type="text" inputmode="decimal" placeholder="Add by IP (e.g. 192.168.1.2)" />
+    <button class="ghost addbtn" id="addBtn">＋</button>
+  </div>
+
+  <h2>Files</h2>
+  <div class="chooser" id="chooser">
+    <div class="big">📤</div>
+    <p><b>Tap to choose files or folder</b></p>
+    <p style="font-size:12px" id="hint">Pick a device above first</p>
+  </div>
+  <div id="queue"></div>
+  <div class="actions">
+    <button id="sendBtn" disabled>Send</button>
+    <button class="ghost" id="clearBtn">Clear</button>
+  </div>
+
+  <div class="chat-panel" id="chatPanel">
+    <div class="chat-hdr">
+      <div class="chat-hdr-left">
+        <div class="chat-hdr-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+        <span class="chat-hdr-name" id="chatName"></span>
+      </div>
+      <span class="chat-hdr-close" id="chatClose"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>
+    </div>
+    <div class="chat-msgs" id="chatMsgs">
+      <div class="chat-empty"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>No messages yet</div>
+    </div>
+    <div class="chat-input">
+      <textarea id="chatInput" placeholder="Type a message…" rows="1"></textarea>
+      <button class="chat-send" id="chatSendBtn" disabled><svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<!-- Pairing modal -->
+<div class="modal-overlay" id="pairModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="pairTitle">Pair Device</h3>
+      <span class="modal-close" id="pairClose">×</span>
+    </div>
+    <div id="pairStep1" class="pair-step">
+      <p style="margin:0 0 14px;color:var(--muted);font-size:14px">Pair with <b id="pairDevName"></b>:</p>
+      <button class="pair-option" id="pairScanQR">Scan QR Code</button>
+      <button class="pair-option ghost" id="pairQR">Show QR Code</button>
+      <div class="qr-or">— or use PIN —</div>
+      <button class="pair-option" id="pairGenerate">Generate PIN on this device</button>
+      <button class="pair-option ghost" id="pairEnter">I have a PIN from the other device</button>
+    </div>
+    <div id="pairStepQR" class="pair-step" style="display:none">
+      <p style="margin:0 0 10px;color:var(--muted);font-size:14px">Scan this QR code with the other device:</p>
+      <div class="qr-container"><img id="qrImage" src="" alt="QR Code"></div>
+      <p style="margin:10px 0 0;color:var(--muted);font-size:12px">Expires in 120 seconds</p>
+    </div>
+    <div id="pairStep2" class="pair-step" style="display:none">
+      <p style="margin:0 0 10px;color:var(--muted);font-size:14px">Share this PIN with the other device:</p>
+      <div class="pin-display" id="pinDisplay"></div>
+      <p style="margin:10px 0 0;color:var(--muted);font-size:12px">Expires in 60 seconds</p>
+    </div>
+    <div id="pairStep3" class="pair-step" style="display:none">
+      <p style="margin:0 0 12px;color:var(--muted);font-size:14px">Enter the PIN shown on the other device:</p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <input type="text" id="pinInput" class="pin-input" maxlength="6" placeholder="000000" autocomplete="off" inputmode="numeric">
+        <button id="pinSubmit" class="pair-submit" style="width:100%">Pair</button>
+      </div>
+      <p id="pairError" style="margin:10px 0 0;color:var(--err);font-size:13px;display:none"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { me: null, devices: [], target: null, staged: [], transfers: [], pairedIds: new Set() };
+let apiToken = "";
+const apiFetch = (url, opts = {}) => {
+  opts.headers = { ...opts.headers, "X-API-Token": apiToken };
+  return fetch(url, opts);
+};
+
+const platformIcon = p => ({ darwin: "🖥️", windows: "🪟", linux: "🐧", android: "📱", ios: "📱" }[p] || "💻");
+const fmtSize = n => {
+  if (n < 1024) return n + " B";
+  const u = ["KB","MB","GB","TB"]; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(1) + " " + u[i];
+};
+const esc = s => (s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function toast(msg, err) {
+  const t = $("#toast"); t.textContent = msg; t.classList.toggle("err", !!err);
+  t.classList.add("show"); clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+async function loadMe() {
+  try {
+    if (!apiToken) apiToken = await (await fetch("/api/token")).text();
+    state.me = await (await fetch("/api/me")).json();
+    $("#meName").textContent = state.me.name;
+    $("#meIp").textContent = state.me.ip ? " · " + state.me.ip : "";
+    $("#dot").classList.add("live");
+  } catch { setTimeout(loadMe, 800); }
+}
+
+let lastDevicesJson = "";
+async function pollDevices() {
+  try {
+    const data = await (await apiFetch("/api/devices")).json();
+    const j = JSON.stringify(data);
+    if (j === lastDevicesJson) return;   // unchanged → no DOM rebuild (no flicker)
+    lastDevicesJson = j;
+    state.devices = data;
+    renderDevices();
+  } catch {}                             // keep current list on transient failure
+}
+
+function renderDevices() {
+  const el = $("#devices");
+  if (!state.devices.length) {
+    el.innerHTML = '<div class="empty"><span class="spin"></span>Looking for devices…</div>';
+    state.target = null; updateSend(); return;
+  }
+  if (state.target && !state.devices.some(d => d.id === state.target)) state.target = null;
+  el.innerHTML = "";
+  for (const d of state.devices) {
+    const row = document.createElement("div");
+    row.className = "device" + (d.id === state.target ? " active" : "");
+    const sub = esc((d.host || "").replace(/:\d+$/, "") || d.platform || "device");
+    const paired = state.pairedIds && state.pairedIds.has(d.id);
+    row.innerHTML = `<div class="ic">${platformIcon(d.platform)}</div>
+      <div style="flex:1;min-width:0"><div class="nm">${esc(d.name)}</div><div class="pf">${sub}</div></div>
+      ${paired ? '<span class="chat-btn" title="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="unread"></span></span>' : ''}
+      ${paired ? '<button class="pair-btn paired">Paired</button>' : '<button class="pair-btn">Pair</button>'}
+      <div class="rm" title="Remove">×</div>`;
+    row.onclick = () => { state.target = d.id; renderDevices(); updateSend(); };
+    const chatBtn = row.querySelector(".chat-btn");
+    if (chatBtn) chatBtn.onclick = e => { e.stopPropagation(); openChat(d.id, d.name); };
+    const pairBtn = row.querySelector(".pair-btn");
+    if (pairBtn) pairBtn.onclick = e => { e.stopPropagation(); paired ? unpairDevice(d.id) : startPairing(d.id, d.name); };
+    row.querySelector(".rm").onclick = e => { e.stopPropagation(); removePeer(d.id); };
+    el.appendChild(row);
+  }
+  updateSend();
+}
+
+// Called from the native picker / share sheet with [{name,size,path}]
+window.swiftdropOnDrop = infos => {
+  if (!infos || !infos.length) return;
+  const have = new Set(state.staged.map(f => f.path));
+  for (const f of infos) if (!have.has(f.path)) state.staged.push(f);
+  renderQueue(); updateSend();
+};
+
+function pickFiles() {
+  if (window.AndroidBridge && AndroidBridge.showPicker) AndroidBridge.showPicker();
+  else if (window.AndroidBridge && AndroidBridge.pickFiles) AndroidBridge.pickFiles();
+}
+
+const rates = {}; // transfer id -> {sent, t} for speed calc
+
+function fileIcon(isFolder) {
+  if (isFolder) return '<svg class="ficon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7EB6FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+  return '<svg class="ficon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7EB6FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+}
+
+function fileRow(opts) {
+  const { name, size, pct, status, label, sub, cancelId, retryId, showFolder, pendingId, pauseId, resumeId, isFolder } = opts;
+  const r = document.createElement("div");
+  r.className = "file " + (status || "");
+  r.innerHTML = `<div class="meta">
+      <div class="name">${fileIcon(isFolder)}${esc(name)}</div><div class="sub">${sub}</div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>
+    <div class="pct">${label}</div>` +
+    (pendingId ? `<div class="accept">Accept</div><div class="reject">Reject</div>` : "") +
+    (retryId ? `<div class="retry">Retry</div>` : "") +
+    (pauseId ? `<div class="pause">Pause</div>` : "") +
+    (resumeId ? `<div class="pause">Resume</div>` : "") +
+    (showFolder ? `<span class="openfolder" title="Open folder"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>` : "") +
+    (cancelId ? `<div class="cancel">×</div>` : "");
+  if (pendingId) {
+    r.querySelector(".accept").onclick = () => respondTransfer(pendingId, true);
+    r.querySelector(".reject").onclick = () => respondTransfer(pendingId, false);
+  }
+  if (retryId) r.querySelector(".retry").onclick = () => retryTransfer(retryId);
+  if (pauseId) r.querySelector(".pause").onclick = () => pauseTransfer(pauseId);
+  if (resumeId) r.querySelector(".pause").onclick = () => resumeTransfer(resumeId);
+  if (cancelId) r.querySelector(".cancel").onclick = () => cancelTransfer(cancelId);
+  if (showFolder) r.querySelector(".openfolder").onclick = () => openFolder();
+  return r;
+}
+
+function openFolder() {
+  if (window.AndroidBridge && AndroidBridge.openFolder) AndroidBridge.openFolder();
+}
+
+function renderQueue() {
+  const q = $("#queue"); q.innerHTML = "";
+  for (const t of state.transfers) {
+    const pct = t.size > 0 ? Math.round(t.sent / t.size * 100) : (t.status === "done" ? 100 : 0);
+    const sending = t.status === "sending";
+    const pending = t.status === "pending";
+    const preparing = t.status === "preparing";
+    const paused = t.status === "paused";
+    const active = sending || paused;
+    const recv = t.dir === "recv";
+    const partial = t.status === "done" && t.err;
+    const label = preparing ? "Preparing…"
+      : pending ? "Pending"
+      : paused ? "Paused"
+      : partial ? "Partial"
+      : t.status === "done" ? (recv ? "Received" : "Sent")
+      : t.status === "error" ? "Failed" : t.status === "canceled" ? "Canceled" : pct + "%";
+    let sub = (recv ? "↓ from " : "↑ to ") + esc(t.peer || "");
+    if (preparing) { sub += " · preparing…"; }
+    else if (pending) { sub += " · " + fmtSize(t.size) + " · waiting for approval"; }
+    else if (active) { sub += " · " + fmtSize(t.sent) + " / " + fmtSize(t.size); }
+    else { sub += " · " + fmtSize(t.size); }
+    if (sending && t.rate) sub += " · " + fmtSize(t.rate) + "/s";
+    if (paused) sub += " · paused";
+    if (partial) sub += " · " + t.err;
+    const tIsFolder = t.name.startsWith("📁 ");
+    const tName = tIsFolder ? t.name.slice(3) : t.name;
+    q.appendChild(fileRow({
+      name: tName, size: t.size, pct, sub, label, isFolder: tIsFolder,
+      status: t.status === "error" ? "err" : partial ? "" : t.status === "done" ? "done" : t.status === "canceled" ? "err" : "",
+      cancelId: (active && !recv) ? t.id : null,
+      retryId: t.retryable ? t.id : null,
+      showFolder: t.status === "done",
+      pendingId: pending ? t.id : null,
+      pauseId: (sending && !recv) ? t.id : null,
+      resumeId: (paused && !recv) ? t.id : null
+    }));
+  }
+  for (const f of state.staged) {
+    const sub = f.is_folder ? `${f.file_count} file${f.file_count !== 1 ? "s" : ""} · ${fmtSize(f.size)}` : fmtSize(f.size);
+    q.appendChild(fileRow({ name: f.name, size: f.size, pct: 0, sub, label: "Ready", isFolder: f.is_folder }));
+  }
+}
+
+async function respondTransfer(id, accept) {
+  const ep = accept ? "/api/transfers/accept" : "/api/transfers/reject";
+  try { await apiFetch(ep + "?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
+}
+
+async function cancelTransfer(id) {
+  try { await apiFetch("/api/transfers/cancel?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
+}
+
+async function pauseTransfer(id) {
+  try { await apiFetch("/api/transfers/pause?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
+}
+
+async function resumeTransfer(id) {
+  try { await apiFetch("/api/transfers/resume?id=" + encodeURIComponent(id), { method: "POST" }); pollTransfers(); } catch {}
+}
+
+async function retryTransfer(id) {
+  try {
+    const res = await apiFetch("/api/transfers/retry?id=" + encodeURIComponent(id), { method: "POST" });
+    if (!res.ok) { toast(await res.text() || "Retry failed", true); return; }
+    toast("Retrying…");
+    pollTransfers();
+  } catch { toast("Retry failed", true); }
+}
+
+function updateSend() {
+  const tgt = state.devices.find(d => d.id === state.target);
+  const paired = tgt && state.pairedIds.has(tgt.id);
+  $("#sendBtn").disabled = !(tgt && paired && state.staged.length);
+  if (!tgt) {
+    $("#hint").textContent = "Pick a device above first";
+  } else if (!paired) {
+    $("#hint").textContent = "Pair with " + tgt.name + " before sending";
+  } else {
+    $("#hint").textContent = "Sending to " + tgt.name;
+  }
+  if (typeof updateTextHint === "function") updateTextHint();
+}
+
+async function sendAll() {
+  const tgt = state.devices.find(d => d.id === state.target);
+  if (!tgt || !state.staged.length) return;
+  const items = state.staged.map(f => ({ path: f.path, is_folder: !!f.is_folder, name: f.name, size: f.size, file_count: f.file_count || 0 }));
+  $("#sendBtn").disabled = true;
+  try {
+    const res = await apiFetch("/api/send-path", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: state.target, items })
+    });
+    if (!res.ok) { toast(await res.text() || "Send failed", true); return; }
+    const folderCount = state.staged.filter(f => f.is_folder).length;
+    const fileCount = state.staged.length - folderCount;
+    const parts = [];
+    if (fileCount > 0) parts.push(`${fileCount} file${fileCount > 1 ? "s" : ""}`);
+    if (folderCount > 0) parts.push(`${folderCount} folder${folderCount > 1 ? "s" : ""}`);
+    state.staged = [];
+    toast(`Sending ${parts.join(" and ")} to ${tgt.name}`);
+    pollTransfers();
+  } catch { toast("Send failed", true); }
+  finally { updateSend(); }
+}
+
+async function pollTransfers() {
+  try {
+    const data = await (await apiFetch("/api/transfers")).json();
+    const now = performance.now();
+    for (const t of data) {
+      const prev = rates[t.id];
+      if (t.status === "sending" && prev && now > prev.t) {
+        t.rate = (t.sent - prev.sent) / ((now - prev.t) / 1000);
+      }
+      rates[t.id] = { sent: t.sent, t: now };
+    }
+    state.transfers = data;
+    renderQueue();
+  } catch {}
+}
+
+async function addPeer() {
+  const input = $("#hostInput");
+  const host = input.value.trim();
+  if (!host) return;
+  $("#addBtn").disabled = true;
+  try {
+    const res = await apiFetch("/api/peers/add", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host })
+    });
+    if (!res.ok) { toast(await res.text() || "Could not add device", true); }
+    else {
+      const peer = await res.json();
+      input.value = "";
+      toast("Added " + peer.name);
+      await pollDevices();
+      state.target = peer.id; renderDevices(); updateSend();
+    }
+  } catch { toast("Could not add device", true); }
+  finally { $("#addBtn").disabled = false; }
+}
+
+async function removePeer(id) {
+  try {
+    await apiFetch("/api/peers/remove", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id })
+    });
+    if (state.target === id) state.target = null;
+    await pollDevices();
+  } catch {}
+}
+
+// ── Pairing ──
+async function refreshPairedStatus() {
+  for (const d of state.devices) {
+    try {
+      const r = await (await apiFetch("/api/pair/status?id=" + encodeURIComponent(d.id))).json();
+      if (r.paired) state.pairedIds.add(d.id); else state.pairedIds.delete(d.id);
+    } catch {}
+  }
+  renderDevices();
+}
+
+let pairTargetId = "";
+let pairTargetName = "";
+
+function openPairModal(deviceId, deviceName) {
+  pairTargetId = deviceId;
+  pairTargetName = deviceName;
+  $("#pairDevName").textContent = deviceName;
+  $("#pairStep1").style.display = "";
+  $("#pairStepQR").style.display = "none";
+  $("#pairStep2").style.display = "none";
+  $("#pairStep3").style.display = "none";
+  $("#pairError").style.display = "none";
+  $("#pinInput").value = "";
+  $("#pairModal").classList.add("open");
+}
+function closePairModal() { clearInterval(pairPollTimer); pairPollTimer = null; $("#pairModal").classList.remove("open"); }
+
+let pairPollTimer = null;
+async function pairGenerate() {
+  try {
+    const r = await (await apiFetch("/api/pair/begin", { method: "POST" })).json();
+    $("#pinDisplay").textContent = r.pin;
+    $("#pairStep1").style.display = "none";
+    $("#pairStep2").style.display = "";
+    clearInterval(pairPollTimer);
+    pairPollTimer = setInterval(async () => {
+      try {
+        const s = await (await apiFetch("/api/pair/status?id=" + encodeURIComponent(pairTargetId))).json();
+        if (s.paired) {
+          clearInterval(pairPollTimer); pairPollTimer = null;
+          toast(`Paired with ${pairTargetName}!`);
+          closePairModal();
+          refreshPairedStatus();
+        }
+      } catch {}
+    }, 2000);
+  } catch { toast("Failed to start pairing", true); closePairModal(); }
+}
+
+async function pairShowQR() {
+  try {
+    const r = await (await apiFetch("/api/pair/qr-begin", { method: "POST" })).json();
+    // Android returns qr_png as a plain base64 string.
+    $("#qrImage").src = "data:image/png;base64," + r.qr_png;
+    $("#pairStep1").style.display = "none";
+    $("#pairStepQR").style.display = "";
+    clearInterval(pairPollTimer);
+    pairPollTimer = setInterval(async () => {
+      try {
+        const s = await (await apiFetch("/api/pair/status?id=" + encodeURIComponent(pairTargetId))).json();
+        if (s.paired) {
+          clearInterval(pairPollTimer); pairPollTimer = null;
+          toast(`Paired with ${pairTargetName}!`);
+          closePairModal();
+          refreshPairedStatus();
+        }
+      } catch {}
+    }, 2000);
+  } catch { toast("Failed to generate QR code", true); closePairModal(); }
+}
+
+function pairShowInput() {
+  $("#pairStep1").style.display = "none";
+  $("#pairStep3").style.display = "";
+  setTimeout(() => { $("#pinInput").focus(); $("#pinInput").click(); }, 150);
+}
+
+async function pairSubmitPin() {
+  const pin = $("#pinInput").value.trim();
+  if (!pin || pin.length < 4) { $("#pairError").textContent = "Enter a valid PIN"; $("#pairError").style.display = ""; return; }
+  try {
+    const res = await apiFetch("/api/pair/submit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: pairTargetId, pin })
+    });
+    if (!res.ok) { $("#pairError").textContent = await res.text() || "Pairing failed"; $("#pairError").style.display = ""; return; }
+    toast(`Paired with ${pairTargetName}!`);
+    closePairModal();
+    refreshPairedStatus();
+  } catch { $("#pairError").textContent = "Pairing failed"; $("#pairError").style.display = ""; }
+}
+
+function startPairing(deviceId, deviceName) { openPairModal(deviceId, deviceName); }
+
+function pairScanQR() {
+  if (window.AndroidBridge && AndroidBridge.scanQRCode) {
+    closePairModal();
+    AndroidBridge.scanQRCode();
+  } else {
+    toast("QR scanning is only available on Android", true);
+  }
+}
+
+window.onQRPairResult = function(ok, err) {
+  if (ok) {
+    toast("Paired via QR code!");
+    refreshPairedStatus();
+  } else {
+    toast(err || "QR pairing failed", true);
+  }
+};
+
+async function unpairDevice(id) {
+  try {
+    await apiFetch("/api/pair/unpair?id=" + encodeURIComponent(id), { method: "POST" });
+    state.pairedIds.delete(id);
+    renderDevices();
+    updateSend();
+    toast("Device unpaired");
+  } catch { toast("Unpair failed", true); }
+}
+
+// Pairing modal wiring
+$("#pairClose").addEventListener("click", closePairModal);
+$("#pairModal").addEventListener("click", e => { if (e.target === $("#pairModal")) closePairModal(); });
+$("#pairScanQR").addEventListener("click", pairScanQR);
+$("#pairQR").addEventListener("click", pairShowQR);
+$("#pairGenerate").addEventListener("click", pairGenerate);
+$("#pairEnter").addEventListener("click", pairShowInput);
+$("#pinSubmit").addEventListener("click", pairSubmitPin);
+$("#pinInput").addEventListener("keydown", e => { if (e.key === "Enter") pairSubmitPin(); });
+
+$("#addBtn").addEventListener("click", addPeer);
+$("#hostInput").addEventListener("keydown", e => { if (e.key === "Enter") addPeer(); });
+$("#chooser").addEventListener("click", pickFiles);
+$("#sendBtn").addEventListener("click", sendAll);
+$("#clearBtn").addEventListener("click", async () => {
+  state.staged = [];
+  try { await apiFetch("/api/transfers/clear", { method: "POST" }); } catch {}  // clears finished, keeps ongoing
+  await pollTransfers();
+  updateSend();
+});
+$("#meName").addEventListener("click", () => {
+  const name = prompt("Device name", state.me?.name || "");
+  if (name && window.AndroidBridge?.setName) { AndroidBridge.setName(name); $("#meName").textContent = name; if (state.me) state.me.name = name; }
+});
+
+loadMe();
+pollDevices();
+pollTransfers();
+setTimeout(refreshPairedStatus, 2000);
+setInterval(loadMe, 4000);        // refresh own IP on network change
+setInterval(pollDevices, 2000);
+setInterval(pollTransfers, 700);
+setInterval(refreshPairedStatus, 10000);
+
+</script>
+<script src="chat.js"></script>
+</body>
+</html>
