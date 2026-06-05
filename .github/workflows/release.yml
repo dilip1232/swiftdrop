@@ -260,7 +260,7 @@ jobs:
           git tag -a "${{ needs.version.outputs.version }}" -m "Release ${{ needs.version.outputs.version }}"
           git push origin "${{ needs.version.outputs.version }}"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
