@@ -19,7 +19,8 @@
   <a href="#-features">Features</a> ·
   <a href="#-screenshots">Screenshots</a> ·
   <a href="#-security">Security</a> ·
-  <a href="#-building-from-source">Build</a>
+  <a href="#-building-from-source">Build</a> ·
+  <a href="docs/architecture.md">Architecture</a>
 </p>
 
 ---
