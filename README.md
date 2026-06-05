@@ -41,10 +41,10 @@ Most file transfer apps are slow, bloated, or require accounts you don't want to
 <td width="50%">
 
 ### 📁 Files & Folders
-Drag and drop any file or entire folder. Folders are zip-streamed on-the-fly and auto-extracted on the other side.
+Drag and drop any file or entire folder. Send everything in one go — no file size limits.
 
-### 💬 Built-in Chat
-Message any paired device directly. No separate app needed — chat is built right into SwiftDrop.
+### � Clipboard & Text Sharing
+Instantly share clipboard text, links, code snippets, or quick messages between devices. No app switching needed.
 
 ### ⏸️ Pause & Resume
 Pause a transfer mid-stream and pick up exactly where you left off.
@@ -126,8 +126,6 @@ swiftdrop/
 ├── android/    → Android app (Kotlin)
 └── .github/    → Unified CI + single-version release workflow
 ```
-
-**One repo, one version, one release.** Every release produces a DMG, EXE, and APK — all from the same tag.
 
 ---
 
