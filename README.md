@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="docs/assets/logo.png" alt="" width="48" /><br>
+  <img src="docs/assets/logo.svg" alt="" width="56" /><br>
   SwiftDrop
 </h1>
 
@@ -30,7 +30,7 @@ Most file transfer apps are slow, bloated, or require accounts you don't want to
 
 **SwiftDrop sends everything directly** between your devices over your local network — at the raw speed your LAN allows. A 1 GB video? About 15 seconds.
 
-> 🚀 **70–80 MB/s** over WiFi — faster than USB 2.0 and most Bluetooth transfer apps.
+> 🚀 **70–80 MB/s** over WiFi — that's a full HD movie in under 15 seconds.
 
 ---
 
@@ -75,20 +75,17 @@ Works entirely on your local network. No accounts, no sign-ups, no subscriptions
 
 ## 📸 Screenshots
 
-<table align="center">
-<tr>
-<td align="center">
-<strong>🍎 macOS</strong><br><br>
-<img src="docs/assets/screenshot-mac.png" alt="SwiftDrop on macOS" height="480" />
-</td>
-<td align="center">
-<strong>🤖 Android</strong><br><br>
-<img src="docs/assets/screenshot-android.jpg" alt="SwiftDrop on Android" height="480" />
-</td>
-</tr>
-</table>
+### 🍎 macOS
 
-<p align="center"><em>File transfer + chat — works the same on every platform</em></p>
+<p align="center">
+  <img src="docs/assets/screenshot-mac.png" alt="SwiftDrop on macOS" width="380" />
+</p>
+
+### 🤖 Android
+
+<p align="center">
+  <img src="docs/assets/screenshot-android.jpg" alt="SwiftDrop on Android" width="300" />
+</p>
 
 ---
 
