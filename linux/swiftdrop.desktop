@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=SwiftDrop
 Comment=Fast LAN file transfer
-Exec=SwiftDrop
+Exec=swiftdrop
 Icon=swiftdrop
 Type=Application
 Categories=Network;FileTransfer;Utility;
