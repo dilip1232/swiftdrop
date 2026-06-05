@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: core/go.mod
+          go-version-file: linux/go.mod
 
       - name: Install Linux build deps
         run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
@@ -30,6 +30,9 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: go
+        env:
+          GOROOT: ${{ env.GOROOT }}
+          GOTOOLCHAIN: local
 
       - name: Build core
         working-directory: core
