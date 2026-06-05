@@ -1,13 +1,13 @@
-module swiftdrop
+module github.com/dilip1232/swiftdrop/mac
 
 go 1.26
 
 require (
+	github.com/dilip1232/swiftdrop/core v0.0.0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.97
-	swiftdrop-core v0.0.0
 )
 
-replace swiftdrop-core => ../swiftdrop-core
+replace github.com/dilip1232/swiftdrop/core => ../core
 
 require (
 	dario.cat/mergo v1.0.2 // indirect

@@ -1,10 +1,10 @@
-module swiftdrop-windows
+module github.com/dilip1232/swiftdrop/windows
 
 go 1.26
 
 require (
+	github.com/dilip1232/swiftdrop/core v0.0.0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.97
-	swiftdrop-core v0.0.0
 )
 
 require (
@@ -46,4 +46,4 @@ require (
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
 
-replace swiftdrop-core => ../swiftdrop-core
+replace github.com/dilip1232/swiftdrop/core => ../core

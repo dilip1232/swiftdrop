@@ -13,7 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	core "swiftdrop-core"
+	core "github.com/dilip1232/swiftdrop/core"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"

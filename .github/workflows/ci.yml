@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, feature/*]
+  pull_request:
+    branches: [main, dev]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ── Build & test Go core ──
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+
+      - name: Build core
+        working-directory: core
+        run: go build ./...
+
+      - name: Test core
+        working-directory: core
+        run: go test ./...
+
+  # ── Build macOS app ──
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mac/go.mod
+
+      - name: Build mac
+        working-directory: mac
+        run: go build -o swiftdrop .
+
+  # ── Build Windows app ──
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: windows/go.mod
+
+      - name: Build SwiftDrop.exe
+        working-directory: windows
+        run: go build -ldflags "-s -w -H windowsgui" -o SwiftDrop.exe .
+
+      - name: Headless smoke test
+        working-directory: windows
+        shell: pwsh
+        run: |
+          Start-Process -NoNewWindow -FilePath .\SwiftDrop.exe -ArgumentList "-headless"
+          Start-Sleep -Seconds 5
+          try {
+            $response = Invoke-WebRequest -Uri "http://localhost:53317/api/me" -UseBasicParsing
+            Write-Host "Health check passed: $($response.Content)"
+          } finally {
+            Stop-Process -Name SwiftDrop -Force -ErrorAction SilentlyContinue
+          }
+
+  # ── Build Android app ──
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon

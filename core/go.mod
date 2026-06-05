@@ -1,4 +1,4 @@
-module swiftdrop-core
+module github.com/dilip1232/swiftdrop/core
 
 go 1.25.0
 

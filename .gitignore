@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# === Go / Mac ===
+mac/swiftdrop
+mac/SwiftDrop.app/
+mac/*.dmg
+mac/.dmg-staging/
+
+# === Go / Windows ===
+windows/SwiftDrop.exe
+windows/*.exe
+
+# === Android ===
+android/*.iml
+android/.gradle/
+android/local.properties
+android/.idea/
+android/build/
+android/app/build/
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+android/*.apk
+android/*.keystore
+android/*.jks
