@@ -44,7 +44,7 @@ Most file transfer apps are slow, bloated, or cap your speed well below what you
 | Instantly share clipboard text, links, code snippets, or quick messages between devices. | Scan a QR code to pair devices instantly — no typing, no codes. |
 | **⏸️ Pause & Resume** | **🔍 Auto-Discovery** |
 | Pause a transfer mid-stream and pick up exactly where you left off. | Devices find each other via mDNS. LAN subnet scanning as fallback. |
-| **�️ Receiver Consent** | **📱 Cross-Platform** |
+| **✅ Receiver Consent** | **📱 Cross-Platform** |
 | Nothing downloads without your permission. Accept or reject every incoming file. | macOS menu bar · Windows system tray · Android native — all seamless. |
 | **🌐 No Internet Required** | |
 | Works entirely on your local network. No accounts, no sign-ups, no subscriptions. | |
