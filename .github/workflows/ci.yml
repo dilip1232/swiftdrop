@@ -51,6 +51,11 @@ jobs:
         working-directory: mac
         run: go build -o swiftdrop .
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swiftdrop-mac
+          path: mac/swiftdrop
+
   # ── Build Windows app ──
   windows:
     runs-on: windows-latest
@@ -72,6 +77,11 @@ jobs:
       - name: Build SwiftDrop.exe
         working-directory: windows
         run: go build -ldflags "-s -w -H windowsgui" -o SwiftDrop.exe .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swiftdrop-windows
+          path: windows/SwiftDrop.exe
 
       - name: Headless smoke test
         working-directory: windows
@@ -111,6 +121,11 @@ jobs:
         working-directory: linux
         run: go build -o swiftdrop .
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swiftdrop-linux
+          path: linux/swiftdrop
+
   # ── Build Android app ──
   android:
     runs-on: ubuntu-latest
@@ -131,3 +146,8 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swiftdrop-android
+          path: android/app/build/outputs/apk/debug/app-debug.apk
