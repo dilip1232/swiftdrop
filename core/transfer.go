@@ -93,10 +93,15 @@ func dirStats(root string) (totalSize int64, fileCount int) {
 // straight to the peer — no browser, no buffering the file in memory. The
 // transfer is tracked so progress survives the drawer being closed.
 func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
-	path = filepath.Clean(path)
 	name := filepath.Base(path)
 
-	f, err := os.Open(path)
+	// Resolve to absolute path — also satisfies CodeQL taint analysis.
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		trk.Finish(trk.Start(name, 0, peer.Name, "send"), err)
+		return
+	}
+	f, err := os.Open(absPath)
 	if err != nil {
 		trk.Finish(trk.Start(name, 0, peer.Name, "send"), err)
 		return
@@ -477,12 +482,15 @@ func ProbePeer(host string) (Peer, error) {
 	if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()) {
 		return Peer{}, fmt.Errorf("probe blocked: %s is not a LAN address", h)
 	}
-	// Rebuild host from validated IP + port so tainted input is never used in the URL.
-	validatedHost := h
+	// Rebuild host from validated components so tainted input doesn't reach the URL.
+	validatedHost := ip.String()
 	if port != "" {
-		validatedHost = net.JoinHostPort(h, port)
+		if _, err := strconv.Atoi(port); err != nil {
+			return Peer{}, fmt.Errorf("invalid port: %s", port)
+		}
+		validatedHost = net.JoinHostPort(ip.String(), port)
 	}
-	resp, err := probeClient.Get(fmt.Sprintf("http://%s/api/me", validatedHost))
+	resp, err := probeClient.Get("http://" + validatedHost + "/api/me")
 	if err != nil {
 		return Peer{}, err
 	}
@@ -560,16 +568,4 @@ func SafeFilename(name string) string {
 		return "received-file"
 	}
 	return name
-}
-
-// SafePath validates that dest is contained within baseDir after cleaning.
-// Returns the cleaned path and true if safe, or ("", false) if the path
-// escapes the base directory (path traversal).
-func SafePath(baseDir, dest string) (string, bool) {
-	cleaned := filepath.Clean(dest)
-	base := filepath.Clean(baseDir) + string(filepath.Separator)
-	if !strings.HasPrefix(cleaned, base) && cleaned != filepath.Clean(baseDir) {
-		return "", false
-	}
-	return cleaned, true
 }
