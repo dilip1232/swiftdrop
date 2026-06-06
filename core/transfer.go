@@ -93,6 +93,7 @@ func dirStats(root string) (totalSize int64, fileCount int) {
 // straight to the peer — no browser, no buffering the file in memory. The
 // transfer is tracked so progress survives the drawer being closed.
 func SendFileByPath(peer Peer, self Identity, path string, trk *Tracker) {
+	path = filepath.Clean(path)
 	name := filepath.Base(path)
 
 	f, err := os.Open(path)
@@ -467,15 +468,21 @@ var probeClient = &http.Client{Timeout: 4 * time.Second}
 
 func ProbePeer(host string) (Peer, error) {
 	// Validate host is a private/loopback IP to prevent SSRF.
-	h, _, err := net.SplitHostPort(host)
+	h, port, err := net.SplitHostPort(host)
 	if err != nil {
-		h = host // no port
+		h = host
+		port = ""
 	}
 	ip := net.ParseIP(h)
 	if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()) {
 		return Peer{}, fmt.Errorf("probe blocked: %s is not a LAN address", h)
 	}
-	resp, err := probeClient.Get(fmt.Sprintf("http://%s/api/me", host))
+	// Rebuild host from validated IP + port so tainted input is never used in the URL.
+	validatedHost := h
+	if port != "" {
+		validatedHost = net.JoinHostPort(h, port)
+	}
+	resp, err := probeClient.Get(fmt.Sprintf("http://%s/api/me", validatedHost))
 	if err != nil {
 		return Peer{}, err
 	}
@@ -491,7 +498,7 @@ func ProbePeer(host string) (Peer, error) {
 		ID:       id.ID,
 		Name:     id.Name,
 		Platform: id.Platform,
-		Host:     host,
+		Host:     validatedHost,
 		Manual:   true,
 	}, nil
 }

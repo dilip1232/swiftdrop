@@ -356,13 +356,12 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	tr.Status = "sending"
 
-	dest := UniquePath(filepath.Join(dlDir, name))
-	if safe, ok := SafePath(dlDir, dest); !ok {
+	rawDest := UniquePath(filepath.Join(dlDir, name))
+	dest, ok := SafePath(dlDir, rawDest)
+	if !ok {
 		s.Trk.Finish(tr, fmt.Errorf("path traversal rejected"))
 		http.Error(w, "invalid filename", http.StatusBadRequest)
 		return
-	} else {
-		dest = safe
 	}
 	f, err := os.Create(dest)
 	if err != nil {
@@ -493,13 +492,12 @@ func (s *Server) handleFolderAnnounce(w http.ResponseWriter, r *http.Request, fo
 	session := hex.EncodeToString(tokenBytes)
 
 	dlDir := DownloadDir()
-	folderDir := UniquePath(filepath.Join(dlDir, folderName))
-	if safe, ok := SafePath(dlDir, folderDir); !ok {
+	rawFolderDir := UniquePath(filepath.Join(dlDir, folderName))
+	folderDir, ok := SafePath(dlDir, rawFolderDir)
+	if !ok {
 		s.Trk.Finish(tr, fmt.Errorf("path traversal rejected"))
 		http.Error(w, "invalid folder name", http.StatusBadRequest)
 		return
-	} else {
-		folderDir = safe
 	}
 	folderName = filepath.Base(folderDir) // may be "Folder (1)" if original exists
 	os.MkdirAll(folderDir, 0755)
@@ -540,12 +538,11 @@ func (s *Server) handleFolderFile(w http.ResponseWriter, r *http.Request, sessio
 	}
 
 	baseDir := filepath.Join(fs.DlDir, fs.FolderName)
-	dest := filepath.Join(baseDir, relPath)
-	if safe, ok := SafePath(baseDir, dest); !ok {
+	rawDest := filepath.Join(baseDir, relPath)
+	dest, ok := SafePath(baseDir, rawDest)
+	if !ok {
 		http.Error(w, "path traversal rejected", http.StatusBadRequest)
 		return
-	} else {
-		dest = safe
 	}
 	os.MkdirAll(filepath.Dir(dest), 0755)
 
@@ -780,7 +777,10 @@ func (s *Server) handleSendPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range body.Paths {
-		path := p
+		path := filepath.Clean(p)
+		if !filepath.IsAbs(path) {
+			continue
+		}
 		fi, err := os.Stat(path)
 		if err != nil {
 			continue
@@ -858,13 +858,14 @@ func WriteJSON(w http.ResponseWriter, v any) {
 // UniquePath returns path, or path with " (n)" inserted before the extension
 // if it already exists, so concurrent/repeat transfers never clobber files.
 func UniquePath(path string) string {
+	path = filepath.Clean(path) // sanitize before any filesystem access
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return path
 	}
 	ext := filepath.Ext(path)
 	base := strings.TrimSuffix(path, ext)
 	for i := 1; ; i++ {
-		candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
+		candidate := filepath.Clean(fmt.Sprintf("%s (%d)%s", base, i, ext))
 		if _, err := os.Stat(candidate); os.IsNotExist(err) {
 			return candidate
 		}
