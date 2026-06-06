@@ -39,11 +39,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Build UI
         working-directory: ui
-        run: npm install && npm run build
+        run: |
+          npm cache clean --force
+          npm install
+          npm run build
 
       - uses: actions/setup-go@v6
         with:
@@ -73,12 +76,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Build UI
         working-directory: ui
         shell: bash
         run: |
+          npm cache clean --force
           npm install
           npm run build
 
@@ -109,11 +113,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Build UI
         working-directory: ui
-        run: npm install && npm run build
+        run: |
+          npm cache clean --force
+          npm install
+          npm run build
 
       - uses: actions/setup-go@v6
         with:
