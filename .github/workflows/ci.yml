@@ -11,6 +11,33 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # ── Verify UI build is in sync ──
+  ui-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Rebuild UI and check for diff
+        run: |
+          cd ui && npm install --ignore-scripts && npm run build && cd ..
+          if ! diff -rq ui/dist mac/ui >/dev/null 2>&1; then
+            echo "❌ mac/ui is out of sync with ui/src — run 'npm run build' in ui/ and sync platform dirs"
+            exit 1
+          fi
+          if ! diff -rq ui/dist linux/ui >/dev/null 2>&1; then
+            echo "❌ linux/ui is out of sync with ui/src"
+            exit 1
+          fi
+          if ! diff -rq ui/dist windows/ui >/dev/null 2>&1; then
+            echo "❌ windows/ui is out of sync with ui/src"
+            exit 1
+          fi
+          echo "✅ All platform ui/ dirs are in sync"
+
   # ── Build & test Go core ──
   core:
     runs-on: ubuntu-latest
