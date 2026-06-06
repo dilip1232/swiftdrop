@@ -1,7 +1,6 @@
 package core
 
 import (
-	"archive/zip"
 	"crypto/hmac"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
@@ -338,12 +337,8 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Receiver consent: block until the user accepts or 60s timeout ──
-	displayName := name
-	if r.Header.Get("X-Folder") == "zip" {
-		displayName = "📁 " + name
-	}
-	tr := s.Trk.StartPending(displayName, trackSize, from)
-	Notify("SwiftDrop", fmt.Sprintf("%s wants to send %s (%s)", from, displayName, HumanSize(trackSize)))
+	tr := s.Trk.StartPending(name, trackSize, from)
+	Notify("SwiftDrop", fmt.Sprintf("%s wants to send %s (%s)", from, name, HumanSize(trackSize)))
 	if s.ConsentHook != nil {
 		go s.ConsentHook(tr, from, name, trackSize)
 	}
@@ -362,6 +357,13 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	tr.Status = "sending"
 
 	dest := UniquePath(filepath.Join(dlDir, name))
+	if safe, ok := SafePath(dlDir, dest); !ok {
+		s.Trk.Finish(tr, fmt.Errorf("path traversal rejected"))
+		http.Error(w, "invalid filename", http.StatusBadRequest)
+		return
+	} else {
+		dest = safe
+	}
 	f, err := os.Create(dest)
 	if err != nil {
 		s.Trk.Finish(tr, fmt.Errorf("create file: %w", err))
@@ -399,8 +401,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Verify decrypted file size matches X-File-Size to detect truncation.
-		// Skip for folder (zip) transfers — X-File-Size is the raw total, not the zip size.
-		if origSize > 0 && r.Header.Get("X-Folder") != "zip" {
+		if origSize > 0 {
 			if fi, err := f.Stat(); err == nil && fi.Size() != origSize {
 				s.Trk.Finish(tr, fmt.Errorf("size mismatch: expected %d, got %d", origSize, fi.Size()))
 				f.Close()
@@ -415,25 +416,9 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		if closeErr != nil {
 			log.Printf("inbox close %s: %v", dest, closeErr)
 		}
-		// Auto-unzip folder transfers.
-		if r.Header.Get("X-Folder") == "zip" {
-			folderDest := UniquePath(filepath.Join(dlDir, strings.TrimSuffix(name, filepath.Ext(name))))
-			if err := unzipFile(dest, folderDest); err != nil {
-				s.Trk.Finish(tr, fmt.Errorf("unzip: %w", err))
-				os.Remove(dest)
-				http.Error(w, "unzip failed", http.StatusInternalServerError)
-				log.Printf("inbox unzip %s: %v", dest, err)
-				return
-			}
-			os.Remove(dest) // clean up temp zip
-			s.Trk.Finish(tr, nil)
-			log.Printf("received folder %q (%s, encrypted) from %s", filepath.Base(folderDest), HumanSize(n), from)
-			Notify("SwiftDrop", fmt.Sprintf("Received folder %s (%s) from %s", filepath.Base(folderDest), HumanSize(n), from))
-		} else {
-			s.Trk.Finish(tr, nil)
-			log.Printf("received %q (%s, encrypted) from %s", filepath.Base(dest), HumanSize(n), from)
-			Notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), HumanSize(n), from))
-		}
+		s.Trk.Finish(tr, nil)
+		log.Printf("received %q (%s, encrypted) from %s", filepath.Base(dest), HumanSize(n), from)
+		Notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), HumanSize(n), from))
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, "ok")
 		return
@@ -466,69 +451,11 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Auto-unzip folder transfers.
-	if r.Header.Get("X-Folder") == "zip" {
-		folderDest := UniquePath(filepath.Join(dlDir, strings.TrimSuffix(name, filepath.Ext(name))))
-		if err := unzipFile(dest, folderDest); err != nil {
-			s.Trk.Finish(tr, fmt.Errorf("unzip: %w", err))
-			os.Remove(dest)
-			http.Error(w, "unzip failed", http.StatusInternalServerError)
-			log.Printf("inbox unzip %s: %v", dest, err)
-			return
-		}
-		os.Remove(dest)
-		s.Trk.Finish(tr, nil)
-		log.Printf("received folder %q (%s) from %s", filepath.Base(folderDest), HumanSize(n), from)
-		Notify("SwiftDrop", fmt.Sprintf("Received folder %s (%s) from %s", filepath.Base(folderDest), HumanSize(n), from))
-	} else {
-		s.Trk.Finish(tr, nil)
-		log.Printf("received %q (%s) from %s", filepath.Base(dest), HumanSize(n), from)
-		Notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), HumanSize(n), from))
-	}
+	s.Trk.Finish(tr, nil)
+	log.Printf("received %q (%s) from %s", filepath.Base(dest), HumanSize(n), from)
+	Notify("SwiftDrop", fmt.Sprintf("Received %s (%s) from %s", filepath.Base(dest), HumanSize(n), from))
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, "ok")
-}
-
-// unzipFile extracts a zip archive to destDir, preserving directory structure.
-// Guards against zip-slip by verifying all paths stay under destDir.
-func unzipFile(zipPath, destDir string) error {
-	zr, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer zr.Close()
-
-	for _, f := range zr.File {
-		target := filepath.Join(destDir, filepath.FromSlash(f.Name))
-		// Zip-slip guard.
-		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), filepath.Clean(destDir)+string(os.PathSeparator)) &&
-			filepath.Clean(target) != filepath.Clean(destDir) {
-			return fmt.Errorf("zip-slip: %s", f.Name)
-		}
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0755)
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.Create(target)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, err = io.Copy(out, rc)
-		rc.Close()
-		out.Close()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ── Folder protocol handlers ────────────────────────────────────────────────
@@ -567,6 +494,13 @@ func (s *Server) handleFolderAnnounce(w http.ResponseWriter, r *http.Request, fo
 
 	dlDir := DownloadDir()
 	folderDir := UniquePath(filepath.Join(dlDir, folderName))
+	if safe, ok := SafePath(dlDir, folderDir); !ok {
+		s.Trk.Finish(tr, fmt.Errorf("path traversal rejected"))
+		http.Error(w, "invalid folder name", http.StatusBadRequest)
+		return
+	} else {
+		folderDir = safe
+	}
 	folderName = filepath.Base(folderDir) // may be "Folder (1)" if original exists
 	os.MkdirAll(folderDir, 0755)
 
@@ -605,7 +539,14 @@ func (s *Server) handleFolderFile(w http.ResponseWriter, r *http.Request, sessio
 		return
 	}
 
-	dest := filepath.Join(fs.DlDir, fs.FolderName, relPath)
+	baseDir := filepath.Join(fs.DlDir, fs.FolderName)
+	dest := filepath.Join(baseDir, relPath)
+	if safe, ok := SafePath(baseDir, dest); !ok {
+		http.Error(w, "path traversal rejected", http.StatusBadRequest)
+		return
+	} else {
+		dest = safe
+	}
 	os.MkdirAll(filepath.Dir(dest), 0755)
 
 	f, err := os.Create(dest)

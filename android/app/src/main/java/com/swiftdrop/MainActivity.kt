@@ -250,7 +250,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun jsCallback(ok: Boolean, err: String?) {
         val js = if (ok) "window.onQRPairResult && window.onQRPairResult(true)"
-        else "window.onQRPairResult && window.onQRPairResult(false, ${JSONObject.quote(err ?: "error")})"
+        else "window.onQRPairResult && window.onQRPairResult(false, ${JSONObject.quote("Pairing failed. Please try again.")})"
         web.evaluateJavascript(js, null)
     }
 

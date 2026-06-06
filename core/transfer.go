@@ -393,7 +393,7 @@ var TransferClient = &http.Client{
 // buffering the whole file. contentLength may be -1 if unknown (chunked).
 // When encrypted is true, the X-Encrypted header is set so the receiver knows
 // to decrypt. Canceling ctx aborts the in-flight request.
-func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename string, body io.Reader, contentLength int64, originalSize int64, encrypted bool, sha256hash string, isFolder ...bool) error {
+func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename string, body io.Reader, contentLength int64, originalSize int64, encrypted bool, sha256hash string) error {
 	target := fmt.Sprintf("http://%s/inbox", peer.Host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {
@@ -414,9 +414,6 @@ func SendToPeerWithOpts(ctx context.Context, peer Peer, self Identity, filename 
 	}
 	if sha256hash != "" {
 		req.Header.Set("X-SHA256", sha256hash)
-	}
-	if len(isFolder) > 0 && isFolder[0] {
-		req.Header.Set("X-Folder", "zip")
 	}
 	// HMAC sender authentication: sign fromID|filename|timestamp with shared key.
 	if key := Pairs.IsPaired(peer.ID); key != nil {
@@ -469,6 +466,15 @@ func LocalIP() string {
 var probeClient = &http.Client{Timeout: 4 * time.Second}
 
 func ProbePeer(host string) (Peer, error) {
+	// Validate host is a private/loopback IP to prevent SSRF.
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host // no port
+	}
+	ip := net.ParseIP(h)
+	if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()) {
+		return Peer{}, fmt.Errorf("probe blocked: %s is not a LAN address", h)
+	}
 	resp, err := probeClient.Get(fmt.Sprintf("http://%s/api/me", host))
 	if err != nil {
 		return Peer{}, err
@@ -547,4 +553,16 @@ func SafeFilename(name string) string {
 		return "received-file"
 	}
 	return name
+}
+
+// SafePath validates that dest is contained within baseDir after cleaning.
+// Returns the cleaned path and true if safe, or ("", false) if the path
+// escapes the base directory (path traversal).
+func SafePath(baseDir, dest string) (string, bool) {
+	cleaned := filepath.Clean(dest)
+	base := filepath.Clean(baseDir) + string(filepath.Separator)
+	if !strings.HasPrefix(cleaned, base) && cleaned != filepath.Clean(baseDir) {
+		return "", false
+	}
+	return cleaned, true
 }

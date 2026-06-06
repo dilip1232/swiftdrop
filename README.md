@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/dilip1232/swiftdrop/releases/latest"><img src="https://img.shields.io/github/v/release/dilip1232/swiftdrop?style=for-the-badge&color=blue" alt="Latest Release"></a>&nbsp;
   <a href="https://github.com/dilip1232/swiftdrop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dilip1232/swiftdrop/ci.yml?style=for-the-badge&label=CI" alt="CI"></a>&nbsp;
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/dilip1232/swiftdrop?style=for-the-badge" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-blue?style=for-the-badge" alt="License"></a>
 </p>
 
 <p align="center">
