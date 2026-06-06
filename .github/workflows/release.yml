@@ -37,6 +37,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build UI
+        working-directory: ui
+        run: npm ci && npm run build
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: mac/go.mod
@@ -63,6 +71,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build UI
+        working-directory: ui
+        run: npm ci && npm run build
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: windows/go.mod
@@ -87,6 +103,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build UI
+        working-directory: ui
+        run: npm ci && npm run build
 
       - uses: actions/setup-go@v6
         with:
