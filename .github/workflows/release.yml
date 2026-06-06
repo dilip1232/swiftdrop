@@ -43,7 +43,7 @@ jobs:
 
       - name: Build UI
         working-directory: ui
-        run: npm ci && npm run build
+        run: npm install && npm run build
 
       - uses: actions/setup-go@v6
         with:
@@ -79,7 +79,7 @@ jobs:
         working-directory: ui
         shell: bash
         run: |
-          npm ci
+          npm install
           npm run build
 
       - uses: actions/setup-go@v6
@@ -113,7 +113,7 @@ jobs:
 
       - name: Build UI
         working-directory: ui
-        run: npm ci && npm run build
+        run: npm install && npm run build
 
       - uses: actions/setup-go@v6
         with:
