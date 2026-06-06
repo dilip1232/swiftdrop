@@ -12,6 +12,9 @@ cd "$(dirname "$0")"
 APP="SwiftDrop.app"
 BIN="swiftdrop"
 
+echo "› building UI…"
+(cd ../ui && npm run build)
+
 echo "› building binary…"
 go build -o "$BIN" .
 

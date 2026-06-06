@@ -32,6 +32,9 @@ type Server struct {
 	// Pick opens a native file picker and returns chosen absolute paths.
 	// Injected by the platform shell; nil in headless mode.
 	Pick func() ([]string, error)
+	// ResolveDrop reads file paths from the native drag pasteboard.
+	// Injected by the platform shell; nil in headless mode.
+	ResolveDrop func() []string
 	// OnQuit quits the app; injected by the platform shell.
 	OnQuit func()
 	// ConsentHook is called (in a goroutine) when a pending transfer needs
@@ -50,6 +53,7 @@ type Server struct {
 
 	// folderSessions maps session tokens to active folder transfers.
 	folderSessions sync.Map // string -> *FolderSession
+
 }
 
 // FolderSession tracks a multi-file folder transfer on the receiver side.
@@ -161,6 +165,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/notify", s.requireToken(s.handleChatNotify))
 	mux.HandleFunc("/api/chat/notify/ack", s.requireToken(s.handleChatNotifyAck))
 	mux.HandleFunc("/api/pick", s.requireToken(s.handlePick))
+	mux.HandleFunc("/api/stage-upload", s.requireToken(s.handleStageUpload))
+	mux.HandleFunc("/api/resolve-drop", s.requireToken(func(w http.ResponseWriter, _ *http.Request) {
+		if s.ResolveDrop == nil {
+			WriteJSON(w, []FileInfo{})
+			return
+		}
+		paths := s.ResolveDrop()
+		WriteJSON(w, FileInfos(paths))
+	}))
 	mux.HandleFunc("/api/open-folder", s.requireToken(func(w http.ResponseWriter, _ *http.Request) {
 		OpenFolder(DownloadDir())
 		io.WriteString(w, "ok")
@@ -207,9 +220,9 @@ func (s *Server) Handler() http.Handler {
 	// Static web UI — inject token into index.html so the embedded webview
 	// doesn't need a separate /api/token fetch (which can fail in Wails).
 	if s.WebFS != nil {
-		sub, err := fs.Sub(s.WebFS, "web")
+		sub, err := fs.Sub(s.WebFS, "ui")
 		if err != nil {
-			log.Fatalf("embed web: %v", err)
+			log.Fatalf("embed ui: %v", err)
 		}
 		staticFS := http.FileServer(http.FS(sub))
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -219,9 +232,8 @@ func (s *Server) Handler() http.Handler {
 					http.Error(w, "not found", 404)
 					return
 				}
-				injected := strings.Replace(string(raw),
-					`let apiToken = "";`,
-					fmt.Sprintf(`let apiToken = %q;`, s.ID.APIToken), 1)
+				tokenTag := fmt.Sprintf(`<script>window.__SWIFTDROP_TOKEN__=%q;</script>`, s.ID.APIToken)
+				injected := strings.Replace(string(raw), "</head>", tokenTag+"</head>", 1)
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				io.WriteString(w, injected)
 				return
@@ -826,6 +838,48 @@ func (s *Server) handlePick(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	WriteJSON(w, FileInfos(paths))
+}
+
+func (s *Server) handleStageUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Cap total upload at 512 MB to prevent abuse.
+	r.Body = http.MaxBytesReader(w, r.Body, 512<<20)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "upload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	tmpDir, err := os.MkdirTemp("", "swiftdrop-stage-*")
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	var paths []string
+	for _, fhs := range r.MultipartForm.File {
+		for _, fh := range fhs {
+			name := filepath.Base(fh.Filename)
+			if name == "." || name == ".." {
+				continue
+			}
+			dst := filepath.Join(tmpDir, name)
+			src, err := fh.Open()
+			if err != nil {
+				continue
+			}
+			out, err := os.Create(dst)
+			if err != nil {
+				src.Close()
+				continue
+			}
+			io.Copy(out, src)
+			src.Close()
+			out.Close()
+			paths = append(paths, dst)
+		}
 	}
 	WriteJSON(w, FileInfos(paths))
 }

@@ -1,0 +1,58 @@
+/* ── SwiftDrop Design Tokens ─────────────────────────────────────────────── */
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1e222b;
+  --border: #2a2f3a;
+  --text: #e7ebf0;
+  --muted: #8b93a3;
+  --accent: #4f8cff;
+  --accent-2: #7a5cff;
+  --ok: #34d399;
+  --err: #f87171;
+  --radius: 15px;
+  --shadow: 0 6px 20px rgba(0,0,0,.28);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f3f5f9; --panel: #ffffff; --panel-2: #f7f9fc;
+    --border: #e3e8f0; --text: #11151c; --muted: #66707f;
+    --shadow: 0 6px 18px rgba(20,30,60,.10);
+  }
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+html { margin: 0; height: 100%; clip-path: inset(0 round 12px); background: var(--bg); }
+body {
+  margin: 0; height: 100%;
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--text); overflow: hidden; background: var(--bg);
+}
+
+/* ── Shared utility classes ──────────────────────────────────────────────── */
+.stitle {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+  color: var(--muted); margin: 0 0 6px 2px; font-weight: 600;
+}
+
+button {
+  font: inherit; font-size: 12px; font-weight: 600; border: none; cursor: pointer;
+  border-radius: 9px; padding: 8px 12px; color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  transition: .15s; flex: 1;
+}
+button:hover:not(:disabled) { filter: brightness(1.07); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); flex: none; }
+
+.spin {
+  display: inline-block; width: 14px; height: 14px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: sp 0.8s linear infinite; vertical-align: -2px; margin-right: 6px;
+}
+@keyframes sp { to { transform: rotate(360deg); } }
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }

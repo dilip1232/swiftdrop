@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -70,7 +69,7 @@ func runApp(port int) {
 		MinWidth:       340,
 		MinHeight:      450,
 		Hidden:         false,
-		EnableFileDrop: true,
+		EnableFileDrop: false, // Wails v3 alpha bug: hook never fires + swallows JS drops
 		URL:            "/",
 	})
 
@@ -88,18 +87,6 @@ func runApp(port int) {
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		window.Hide()
 		e.Cancel()
-	})
-
-	// Native drag-and-drop hands us real file paths → push them into the
-	// UI's staging queue so Go can stream directly at full speed.
-	window.RegisterHook(events.Common.WindowFilesDropped, func(e *application.WindowEvent) {
-		paths := e.Context().DroppedFiles()
-		if len(paths) == 0 {
-			return
-		}
-		infos := core.FileInfos(paths)
-		data, _ := json.Marshal(infos)
-		window.ExecJS(fmt.Sprintf("window.swiftdropOnDrop && window.swiftdropOnDrop(%s)", string(data)))
 	})
 
 	// System tray — left-click toggles the window, right-click shows menu.
