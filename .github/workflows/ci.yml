@@ -35,17 +35,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Build UI
-        working-directory: ui
-        run: |
-          npm cache clean --force
-          npm install
-          npm run build
-
       - uses: actions/setup-go@v6
         with:
           go-version-file: mac/go.mod
@@ -64,18 +53,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Build UI
-        working-directory: ui
-        shell: bash
-        run: |
-          npm cache clean --force
-          npm install
-          npm run build
 
       - uses: actions/setup-go@v6
         with:
@@ -108,17 +85,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Build UI
-        working-directory: ui
-        run: |
-          npm cache clean --force
-          npm install
-          npm run build
 
       - uses: actions/setup-go@v6
         with:
