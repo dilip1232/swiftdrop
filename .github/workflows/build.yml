@@ -5,15 +5,18 @@ on:
     branches: [feature/svelte-ui, main]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.23"
+          go-version-file: windows/go.mod
 
       - uses: actions/setup-node@v4
         with:
@@ -27,30 +30,30 @@ jobs:
 
       - name: Build Windows exe
         working-directory: windows
-        run: go build -ldflags="-s -w" -o swiftdrop.exe .
+        run: go build -ldflags="-s -w -H windowsgui" -o SwiftDrop.exe .
 
       - uses: actions/upload-artifact@v4
         with:
           name: swiftdrop-windows
-          path: windows/swiftdrop.exe
+          path: windows/SwiftDrop.exe
 
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.23"
+          go-version-file: linux/go.mod
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install WebKit2GTK
+      - name: Install Linux deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libfuse2
 
       - name: Build UI
         working-directory: ui
@@ -70,11 +73,12 @@ jobs:
           cp linux/swiftdrop.desktop AppDir/swiftdrop.desktop
           cp linux/swiftdrop.png AppDir/usr/share/icons/hicolor/256x256/apps/swiftdrop.png
           cp linux/swiftdrop.png AppDir/swiftdrop.png
-          cat > AppDir/AppRun << 'EOF'
+          cat > AppDir/AppRun <<'APPRUN'
           #!/bin/bash
           APPDIR="$(dirname "$(readlink -f "$0")")"
           exec "$APPDIR/usr/bin/swiftdrop" "$@"
-          EOF
+          APPRUN
+          sed -i 's/^          //' AppDir/AppRun
           chmod +x AppDir/AppRun
 
       - name: Download appimagetool
@@ -83,7 +87,7 @@ jobs:
           chmod +x appimagetool
 
       - name: Build AppImage
-        run: ARCH=x86_64 ./appimagetool --no-appstream AppDir SwiftDrop-x86_64.AppImage
+        run: ARCH=x86_64 ./appimagetool --appimage-extract-and-run --no-appstream AppDir SwiftDrop-x86_64.AppImage
 
       - uses: actions/upload-artifact@v4
         with:
