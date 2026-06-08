@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -86,7 +85,7 @@ func runApp(port int) {
 		MinWidth:         340,
 		MinHeight:        450,
 		Hidden:           true,
-		EnableFileDrop:   true,
+		EnableFileDrop:   false, // Wails v3 alpha bug: hook never fires + swallows JS drops
 		URL:              "/",
 		BackgroundColour: application.NewRGB(15, 17, 21), // matches --bg: #0f1115
 		Mac: application.MacWindow{
@@ -104,23 +103,15 @@ func runApp(port int) {
 		return paths, err
 	}
 
+	// Read file paths from the macOS drag pasteboard (zero-copy drop).
+	srv.ResolveDrop = func() []string {
+		return draggedPaths()
+	}
+
 	// Hide-to-tray: closing the window hides it; the app keeps running.
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		window.Hide()
 		e.Cancel()
-	})
-
-	// Native drag-and-drop hands us real file paths → push them into the UI's
-	// staging queue. This is what lets sends run at full speed (Go reads the
-	// file directly) instead of through a browser upload.
-	window.RegisterHook(events.Common.WindowFilesDropped, func(e *application.WindowEvent) {
-		paths := e.Context().DroppedFiles()
-		if len(paths) == 0 {
-			return
-		}
-		infos := core.FileInfos(paths)
-		data, _ := json.Marshal(infos)
-		window.ExecJS(fmt.Sprintf("window.swiftdropOnDrop && window.swiftdropOnDrop(%s)", string(data)))
 	})
 
 	// Native macOS Accept/Reject dialog. ConsentDialog blocks until the user

@@ -1,0 +1,17 @@
+#!/bin/bash
+# Pre-commit hook: rebuild UI if any ui/src files changed and sync to platform dirs.
+
+if git diff --cached --name-only | grep -q '^ui/src/'; then
+  echo "⚡ UI source changed — rebuilding..."
+  (cd ui && npm run build) || { echo "❌ UI build failed"; exit 1; }
+
+  # Sync built output to all platform embed dirs
+  for dir in mac linux windows; do
+    rm -rf "$dir/ui"
+    cp -r ui/dist "$dir/ui"
+  done
+
+  # Stage the updated platform ui/ dirs
+  git add mac/ui linux/ui windows/ui
+  echo "✅ UI rebuilt and synced to mac/ui, linux/ui, windows/ui"
+fi

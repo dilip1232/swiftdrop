@@ -2,5 +2,5 @@ package main
 
 import "embed"
 
-//go:embed web
+//go:embed ui
 var webFS embed.FS

@@ -11,6 +11,33 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # ── Verify UI build is committed ──
+  ui-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify platform UI dirs exist and match
+        run: |
+          fail=0
+          for dir in mac linux windows; do
+            if [ ! -f "$dir/ui/index.html" ]; then
+              echo "❌ $dir/ui/index.html missing — run 'npm run build' in ui/ and sync"
+              fail=1
+            fi
+          done
+          # All three platform dirs should have identical content
+          if ! diff -rq mac/ui linux/ui >/dev/null 2>&1; then
+            echo "❌ mac/ui and linux/ui differ"
+            fail=1
+          fi
+          if ! diff -rq mac/ui windows/ui >/dev/null 2>&1; then
+            echo "❌ mac/ui and windows/ui differ"
+            fail=1
+          fi
+          [ $fail -eq 0 ] && echo "✅ All platform ui/ dirs present and in sync"
+          exit $fail
+
   # ── Build & test Go core ──
   core:
     runs-on: ubuntu-latest
@@ -43,6 +70,11 @@ jobs:
         working-directory: mac
         run: go build -o swiftdrop .
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swiftdrop-mac
+          path: mac/swiftdrop
+
   # ── Build Windows app ──
   windows:
     runs-on: windows-latest
@@ -56,6 +88,11 @@ jobs:
       - name: Build SwiftDrop.exe
         working-directory: windows
         run: go build -ldflags "-s -w -H windowsgui" -o SwiftDrop.exe .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swiftdrop-windows
+          path: windows/SwiftDrop.exe
 
       - name: Headless smoke test
         working-directory: windows
@@ -87,6 +124,11 @@ jobs:
         working-directory: linux
         run: go build -o swiftdrop .
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swiftdrop-linux
+          path: linux/swiftdrop
+
   # ── Build Android app ──
   android:
     runs-on: ubuntu-latest
@@ -107,3 +149,8 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swiftdrop-android
+          path: android/app/build/outputs/apk/debug/app-debug.apk
