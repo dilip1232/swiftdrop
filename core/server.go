@@ -178,6 +178,7 @@ func (s *Server) Handler() http.Handler {
 		OpenFolder(DownloadDir())
 		io.WriteString(w, "ok")
 	}))
+	mux.HandleFunc("/api/settings", s.requireToken(s.handleSettings))
 	mux.HandleFunc("/api/quit", s.requireToken(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if s.OnQuit != nil {
@@ -892,6 +893,36 @@ func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
+	}
+}
+
+// handleSettings serves the local UI's settings panel.  GET returns the
+// current and default download directories; POST updates the download
+// directory (empty string resets to default).
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		WriteJSON(w, map[string]string{
+			"downloadDir":        DownloadDir(),
+			"downloadDirCustom":  ConfiguredDownloadDir(),
+			"downloadDirDefault": DefaultDownloadDir(),
+		})
+	case http.MethodPost:
+		var body struct {
+			DownloadDir string `json:"downloadDir"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		resolved, err := SetDownloadDir(strings.TrimSpace(body.DownloadDir))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		WriteJSON(w, map[string]string{"downloadDir": resolved})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 

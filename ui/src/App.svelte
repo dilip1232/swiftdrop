@@ -10,10 +10,12 @@
   import ConsentOverlay from "./components/ConsentOverlay.svelte";
   import Chat from "./components/Chat.svelte";
   import Toast from "./components/Toast.svelte";
+  import SettingsModal from "./components/SettingsModal.svelte";
 
   let toastRef: Toast;
   let pairModalRef: PairModal;
   let chatRef: Chat;
+  let settingsRef: SettingsModal;
 
   function toast(msg: string, err = false) {
     toastRef?.show(msg, err);
@@ -59,6 +61,7 @@
         {/if}
       </div>
     </div>
+    <button class="ghost settings" onclick={() => settingsRef?.show()} title="Settings">⚙</button>
     <button class="ghost quit" onclick={quit} title="Quit SwiftDrop">Quit</button>
   </header>
 
@@ -73,6 +76,7 @@
 <Toast bind:this={toastRef} />
 <ConsentOverlay />
 <PairModal bind:this={pairModalRef} {toast} />
+<SettingsModal bind:this={settingsRef} {toast} />
 
 <style>
   .wrap {
@@ -86,7 +90,8 @@
     display: grid; place-items: center; color: #fff; font-size: 13px;
   }
   header h1 { font-size: 14px; margin: 0; letter-spacing: .2px; }
-  .quit { margin-left: auto; flex: none; padding: 4px 10px; font-size: 11px; }
+  .settings { margin-left: auto; flex: none; padding: 4px 9px; font-size: 13px; line-height: 1; }
+  .quit { flex: none; padding: 4px 10px; font-size: 11px; }
   .me { font-size: 10.5px; color: var(--muted); margin-top: 1px; }
   .ip { color: var(--muted); }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 4px; vertical-align: middle; }

@@ -348,8 +348,21 @@ func RandomID() string {
 	return hex.EncodeToString(b)
 }
 
-// DownloadDir is where received files land. Created on demand.
+// DownloadDir is where received files land. Created on demand.  If the user
+// has configured a custom directory (and it can be created), that takes
+// precedence; otherwise the default ~/Downloads/SwiftDrop is used.
 func DownloadDir() string {
+	if custom := ConfiguredDownloadDir(); custom != "" {
+		if err := os.MkdirAll(custom, 0o755); err == nil {
+			return custom
+		}
+		// Custom dir unusable (e.g. removed/unmounted): fall back to default.
+	}
+	return DefaultDownloadDir()
+}
+
+// DefaultDownloadDir is the built-in receive location, ~/Downloads/SwiftDrop.
+func DefaultDownloadDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
