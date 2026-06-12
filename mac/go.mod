@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/dilip1232/swiftdrop/core v0.0.0
-	github.com/wailsapp/wails/v3 v3.0.0-alpha.97
+	github.com/wailsapp/wails/v3 v3.0.0-alpha.98-tui
 )
 
 replace github.com/dilip1232/swiftdrop/core => ../core
